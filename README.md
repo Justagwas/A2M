@@ -15,7 +15,7 @@
 <p align="center">
   <a href="https://github.com/Justagwas/A2M/releases/latest/download/A2MSetup.exe">
     <img
-      src="https://img.shields.io/badge/Download%20A2M%20for%20Windows-2563eb?style=for-the-badge&logo=windows&logoColor=white"
+      src="https://img.shields.io/badge/▼%20Download%20A2M%20for%20Windows%20▼-2563eb?style=for-the-badge&logo=windows&logoColor=white"
       alt="Download A2M for Windows"
     >
   </a>
@@ -33,9 +33,9 @@
 
 ---
 
-## Built to be simple
+## Made to be simple
 
-A2M is a desktop app that transcribes a local audio file into MIDI using a trained piano model.
+A2M is a desktop app that transcribes a local audio file into MIDI using a trained model.
 
 - Choose a file
 - Click Convert
@@ -69,7 +69,7 @@ Downloads/A2M
 
 ## Model download
 
-A2M requires a transcription model. On first run, it will prompt you to download it (~165 MB). This is required to transcribe.
+A2M requires a transcription model. On first run, it will prompt you to download it (~165 MB). This is required for MIDI.
 
 ## Model source & credit
 
