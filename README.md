@@ -1,7 +1,7 @@
 ﻿<p align="center">
   <img width="256" height="256"
        alt="A2M Logo"
-       src="" />
+       src="https://github.com/user-attachments/assets/b602dc5c-d979-4389-a310-910944f9bbdb" />
 </p>
 
 <h2 align="center">A2M (Audio To Midi)</h2>
@@ -22,7 +22,7 @@
 </p>
 
 <p align="center">
-  <a href="https://Justagwas.com/projects/A2M">Website</a>
+  <a href="https://Justagwas.com/projects/a2m">Website</a>
   &nbsp;•&nbsp;
   <a href="https://github.com/Justagwas/A2M/releases">Releases</a>
   &nbsp;•&nbsp;
