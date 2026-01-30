@@ -33,7 +33,7 @@
 
 ---
 
-## Made to be simple
+## Overview
 
 A2M is a desktop app that transcribes a local audio file into MIDI using a trained model.
 
@@ -45,11 +45,11 @@ A2M is a desktop app that transcribes a local audio file into MIDI using a train
 
 ## Features
 
-* One-click audio to MIDI conversion
-* Local file workflow (no uploads)
+* Local processing (no uploads)
+* CPU by default, optional NVIDIA GPU acceleration
 * Model download on first run (required once)
-* CPU mode by default
-* Optional GPU mode for faster transcription (NVIDIA only)
+* Output saved to Downloads/A2M
+* Best results on solo piano recordings
 
 ---
 
