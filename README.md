@@ -47,8 +47,6 @@ A2M is a desktop app that transcribes a local audio file into MIDI using a train
 
 * Local processing (no uploads)
 * CPU by default, optional NVIDIA GPU acceleration
-* Model download on first run (required once)
-* Output saved to Downloads/A2M
 * Best results on solo piano recordings
 
 ---
@@ -114,7 +112,7 @@ python A2M.py
 ### Build (PyInstaller)
 
 ```bash
-py -m PyInstaller -F -w -i "icon.ico" --clean --collect-all piano_transcription_inference A2M.py
+py -m PyInstaller -F -w -i "icon.ico" --clean A2M.py
 ```
 
 The executable will be generated in the `dist/` directory.
