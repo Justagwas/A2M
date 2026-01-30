@@ -574,7 +574,7 @@ class AudioToMidiApp:
         bottom_right.pack(side="right", anchor="se")
         official_link = tk.Label(bottom_right, text="Official page", font=fonts["caption"], fg=theme["accent"], bg=theme["bg"], cursor="hand2")
         official_link.pack(side="right", anchor="se", padx=(0, 8))
-        official_link.bind("<Button-1>", lambda e: webbrowser.open("https://justagwas.com/projects/A2M"))
+        official_link.bind("<Button-1>", lambda e: webbrowser.open("https://justagwas.com/projects/a2m"))
         version_label = tk.Label(bottom_right, text="v1.0.0", font=fonts["caption"], fg=theme["muted"], bg=theme["bg"])
         version_label.pack(side="right", anchor="se", padx=(0, 8))
         self.add_hover_effect(self.file_button, bg_normal=theme["surface_alt"], fg_normal=theme["text"], bg_hover=theme["surface_alt_hover"], fg_hover=theme["accent"])
