@@ -7,7 +7,8 @@
   />
 </p>
 
-<h1 align="center">A2M — Audio to MIDI</h1>
+<h1 align="center">A2M</h1>
+<h2 align="center">Audio to Midi</h2>
 
 <p align="center">
   Audio-to-MIDI for local files
