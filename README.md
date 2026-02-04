@@ -10,26 +10,27 @@
 <h1 align="center">A2M — Audio to MIDI</h1>
 
 <p align="center">
-  Convert local audio files into MIDI.<br/>
-  No uploads, no accounts, no cloud processing.
+  Audio-to-MIDI for local files
 </p>
+
+<br/>
 
 <p align="center">
   <a href="https://github.com/Justagwas/A2M/releases/latest/download/A2MSetup.exe">
     <img
-      src="https://img.shields.io/badge/Download%20for%20Windows-2563eb?style=for-the-badge&logo=windows&logoColor=white"
+      src="https://img.shields.io/badge/Download%20A2M%20for%20Windows-2563eb?style=for-the-badge&logo=windows&logoColor=white"
       alt="Download A2M for Windows"
-    />
+    >
   </a>
 </p>
 
 <p align="center">
   <a href="https://Justagwas.com/projects/a2m">Website</a>
-  &nbsp;•&nbsp;
+  &nbsp;&bull;&nbsp;
   <a href="https://github.com/Justagwas/A2M/releases">Releases</a>
-  &nbsp;•&nbsp;
+  &nbsp;&bull;&nbsp;
   <a href="https://github.com/Justagwas/A2M/issues">Issues</a>
-  &nbsp;•&nbsp;
+  &nbsp;&bull;&nbsp;
   <a href="https://github.com/Justagwas/A2M/blob/main/LICENSE">License</a>
 </p>
 
@@ -40,33 +41,27 @@
 A2M is a desktop application that converts a local audio file into a MIDI file
 using a trained transcription model.
 
-It is built to be straightforward and respectful of your data:
-you choose a file, click convert, and receive a MIDI file you can immediately
-use in a DAW or notation tool.
-
-All processing happens locally on your machine.
+- Choose a file
+- Click Convert
+- Get a MIDI file in your `Downloads/A2M` folder
 
 ---
 
-## Who Is This For?
-
-A2M is useful if you want to:
-
-- Transcribe a piano recording into MIDI
-- Extract notes from a practice take or demo
-- Turn an idea into editable MIDI quickly
-- Avoid uploading audio to online services
+## Features
 
 It works best with clean, single-instrument input and is primarily tuned
 for solo piano recordings.
+- Local processing (no uploads)
+- CPU by default, optional NVIDIA GPU acceleration
+- Best results on solo piano recordings
 
 ---
 
-## How It Works
+## Quick Start
 
-1. Launch A2M  
-2. Select an audio file  
-3. Click **Convert**
+1. Launch A2M
+2. Choose an audio file
+3. Click Convert
 
 The generated MIDI file is saved to:
 
@@ -76,34 +71,17 @@ Downloads/A2M
 
 ---
 
-## Features
-
-- Local-only processing (no uploads, no accounts)
-- CPU processing by default
-- Optional NVIDIA GPU acceleration
-- ML-based piano transcription
-- Standard MIDI output
-- Fully open source
-
----
-
 ## Model Download
 
-A2M requires a transcription model to generate MIDI.
+A2M requires a transcription model. On first run, it will prompt you to download it (~165 MB). This is required for MIDI output.
 
-On first launch, the app will prompt you to download the model (~165 MB).
-This download is required and only happens once.
+## Model Source & Credit
 
----
-
-## Model Source and Credit
-
-A2M uses the piano transcription model from:
+This project uses the piano transcription model from:
 
 - https://github.com/qiuqiangkong/piano_transcription_inference
 
-Full credit goes to the original authors and contributors for their research
-and implementation. A2M provides a desktop interface around this work.
+Credits to the original authors and contributors of that project for the model and research work.
 
 ---
 
@@ -112,17 +90,17 @@ and implementation. A2M provides a desktop interface around this work.
 
 ### Configuration
 
-User settings are stored in:
+Settings are stored in:
 
 ```
 .a2m_config.json
-````
+```
 
-This file is located in your user profile directory.
+Located in your user profile folder.
 
----
+### Requirements
 
-### Core Dependencies
+Core dependencies include:
 
 - torch (CPU build recommended for distribution)
 - librosa
@@ -130,16 +108,12 @@ This file is located in your user profile directory.
 - numpy
 - pathvalidate
 
----
-
 ### Run From Source
 
 ```bash
 pip install -r requirements.txt
 python A2M.py
-````
-
----
+```
 
 ### Build (PyInstaller)
 
@@ -153,40 +127,36 @@ The executable will be generated in the `dist/` directory.
 
 ---
 
-## Security and OS Warnings
+## Security & Warnings
 
-Operating systems may show warnings when downloading or running A2M because
-it is not yet widely recognized.
+Operating systems may show warnings when downloading A2M because it is not yet widely recognized.
 
 A2M is:
 
-* Fully open source
-* Local-only (no telemetry, no background network activity)
-* Limited to processing files you explicitly choose
+- Fully open source
+- Local-only (no accounts, no telemetry)
+- Operates only on files you choose
 
-If downloaded from the official GitHub releases page, the application can be
-inspected, built from source, or safely used as-is.
+If downloaded from the official repository or release page, it can be independently verified and safely used.
 
 ---
 
 ## Contributing
 
-Issues, feature suggestions, and pull requests are welcome.
+Issues, suggestions, and pull requests are welcome.
 
-If reporting a bug, please include clear steps to reproduce the issue.
+If reporting bugs, please include clear reproduction steps.
 
 ---
 
 ## License
 
-Apache License 2.0
+Apache-2.0
 
-See the `LICENSE` file for details.
+See `LICENSE` for details.
 
 ---
 
 ## Contact
-
-For questions or feedback:
 
 [email@justagwas.com](mailto:email@justagwas.com)
