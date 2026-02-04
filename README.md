@@ -7,7 +7,7 @@
   />
 </p>
 
-<h1 align="center">A2M/h1>
+<h1 align="center">A2M</h1>
 
 
 <h3 align="center">Audio to MIDI</h3>
