@@ -45,15 +45,19 @@ using a trained transcription model.
 - Click Convert
 - Get a MIDI file in your `Downloads/A2M` folder
 
+It works best with clean, single-instrument input and is primarily tuned
+for solo piano recordings.  
+
 ---
 
 ## Features
 
-It works best with clean, single-instrument input and is primarily tuned
-for solo piano recordings.
-- Local processing (no uploads)
-- CPU by default, optional NVIDIA GPU acceleration
-- Best results on solo piano recordings
+- Local-only processing (no uploads, no accounts)  
+- CPU processing by default  
+- Optional NVIDIA GPU acceleration  
+- ML-based piano transcription  
+- Standard MIDI output  
+- Fully open source  
 
 ---
 
