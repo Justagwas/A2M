@@ -7,11 +7,13 @@
   />
 </p>
 
-<h1 align="center">A2M</h1>
-<h2 align="center">Audio to Midi</h2>
+<h1 align="center">A2M/h1>
+
+
+<h3 align="center">Audio to MIDI</h3>
 
 <p align="center">
-  Audio-to-MIDI for local files
+  Convert local Audio files into MIDI files in just a few clicks.
 </p>
 
 <br/>
