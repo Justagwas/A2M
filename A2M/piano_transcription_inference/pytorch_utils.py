@@ -1,9 +1,5 @@
-import os
 import numpy as np
-import time
 import torch
-
-from .utilities import pad_truncate_sequence
 
 
 def move_data_to_device(x, device):
@@ -24,7 +20,7 @@ def append_to_dict(dict, key, value):
         dict[key] = [value]
  
 
-def forward(model, x, batch_size):
+def forward(model, x, batch_size, stop_event=None):
     """Forward data to model in mini-batch. 
     
     Args: 
@@ -43,12 +39,14 @@ def forward(model, x, batch_size):
     device = next(model.parameters()).device
     
     pointer = 0
-    total_segments = int(np.ceil(len(x) / batch_size))
-    
-    while True:
-        print('Segment {} / {}'.format(pointer, total_segments))
-        if pointer >= len(x):
-            break
+    total_batches = int(np.ceil(len(x) / batch_size))
+    batch_index = 0
+
+    while pointer < len(x):
+        if stop_event is not None and stop_event.is_set():
+            raise InterruptedError("Transcription stopped by user.")
+        batch_index += 1
+        print('Segment {} / {}'.format(batch_index, total_batches))
 
         batch_waveform = move_data_to_device(x[pointer : pointer + batch_size], device)
         pointer += batch_size
@@ -56,6 +54,8 @@ def forward(model, x, batch_size):
         with torch.no_grad():
             model.eval()
             batch_output_dict = model(batch_waveform)
+        if stop_event is not None and stop_event.is_set():
+            raise InterruptedError("Transcription stopped by user.")
 
         for key in batch_output_dict.keys():
             append_to_dict(output_dict, key, batch_output_dict[key].data.cpu().numpy())

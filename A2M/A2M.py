@@ -8,15 +8,27 @@ import json
 import contextlib
 import threading
 import queue
+import time
 import webbrowser
 import ctypes
 import importlib
 from pathlib import Path
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
+from urllib.error import HTTPError
 import tkinter as tk
 import tkinter.ttk as ttk
 import tkinter.font as tkfont
 from tkinter import filedialog, messagebox
+from piano_transcription_inference.model_paths import (
+    MODEL_URL,
+    MODEL_FILENAME,
+    MODEL_MIN_BYTES,
+    MODEL_DIR,
+    get_app_dir as shared_get_app_dir,
+    find_existing_model as shared_find_existing_model,
+    get_model_candidate_dirs,
+    get_existing_model_path as shared_get_existing_model_path,
+)
 
 WINDOWS_RESERVED_NAMES = {
     "CON", "PRN", "AUX", "NUL",
@@ -34,6 +46,8 @@ THEME = {
     "muted": "#9aa4b2",
     "accent": "#4ac3ff",
     "accent_hover": "#2f9bd4",
+    "danger": "#f87171",
+    "danger_hover": "#ef4444",
     "success": "#22c55e",
     "disabled_bg": "#242a38",
     "disabled_fg": "#6b7280",
@@ -56,25 +70,39 @@ except ImportError:
     def sanitize_filename(name):
         return re.sub(r'[<>:"/\\|?*]', '', name)
 
-import librosa
-import pretty_midi
-
 SEGMENT_RE = re.compile(r"Segment\s+(\d+)\s*/\s*(\d+)", re.IGNORECASE)
-
-MODEL_URL = "https://zenodo.org/records/4034264/files/CRNN_note_F1=0.9677_pedal_F1=0.9186.pth?download=1"
-MODEL_FILENAME = "CRNN_note_F1=0.9677_pedal_F1=0.9186.pth"
-MODEL_LEGACY_FILENAMES = {
-    "note_F1=0.9677_pedal_F1=0.9186.pth",
-}
-MODEL_MIN_BYTES = 160_000_000
-MODEL_DIR = Path.home() / "piano_transcription_inference_data"
 CONFIG_PATH = Path.home() / ".a2m_config.json"
+APP_VERSION = "1.1.0"
+UPDATE_MANIFEST_URL = "https://www.justagwas.com/projects/a2m/latest.json"
+UPDATE_CHECK_TIMEOUT_SECONDS = 12
 DEFAULT_CONFIG = {
     "device_preference": "cpu",
     "gpu_batch_size": 4,
+    "auto_check_updates": True,
 }
+DOWNLOAD_TIMEOUT_SECONDS = 45
+DOWNLOAD_RETRIES_PER_HEADER = 3
+DOWNLOAD_RETRY_BACKOFF_SECONDS = 1.2
+DOWNLOAD_HEADER_PROFILES = (
+    {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        "Accept": "*/*",
+        "Referer": "https://justagwas.com/",
+    },
+    {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:127.0) Gecko/20100101 Firefox/127.0",
+        "Accept": "*/*",
+        "Referer": "https://justagwas.com/",
+    },
+    {
+        "User-Agent": "A2M/1.0",
+        "Accept": "*/*",
+    },
+)
 
 _PTI_MODULE = None
+_LIBROSA_MODULE = None
+_PRETTY_MIDI_MODULE = None
 
 def get_pti_module():
     global _PTI_MODULE
@@ -82,10 +110,20 @@ def get_pti_module():
         _PTI_MODULE = importlib.import_module("piano_transcription_inference")
     return _PTI_MODULE
 
+def get_librosa_module():
+    global _LIBROSA_MODULE
+    if _LIBROSA_MODULE is None:
+        _LIBROSA_MODULE = importlib.import_module("librosa")
+    return _LIBROSA_MODULE
+
+def get_pretty_midi_module():
+    global _PRETTY_MIDI_MODULE
+    if _PRETTY_MIDI_MODULE is None:
+        _PRETTY_MIDI_MODULE = importlib.import_module("pretty_midi")
+    return _PRETTY_MIDI_MODULE
+
 def get_app_dir():
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent
+    return shared_get_app_dir(app_file=__file__)
 
 def set_app_icon(window):
     icon_path = get_app_dir() / "icon.ico"
@@ -101,32 +139,45 @@ def download_file(url, dest_path, progress_callback=None):
     tmp_path = dest_path.with_suffix(dest_path.suffix + ".part")
     if tmp_path.exists():
         tmp_path.unlink()
-    try:
-        with urlopen(url) as response, open(tmp_path, "wb") as out_file:
-            total_header = response.headers.get("Content-Length")
-            total_size = int(total_header) if total_header and total_header.isdigit() else None
-            downloaded = 0
-            while True:
-                chunk = response.read(1024 * 1024)
-                if not chunk:
-                    break
-                out_file.write(chunk)
-                downloaded += len(chunk)
-                if total_size and progress_callback:
-                    percent = int(downloaded * 100 / total_size)
-                    progress_callback(min(percent, 100))
-        os.replace(tmp_path, dest_path)
-    except Exception as exc:
-        if tmp_path.exists():
-            tmp_path.unlink()
-        raise RuntimeError(f"Failed to download model: {exc}") from exc
+    attempt_errors = []
+
+    for profile_index, headers in enumerate(DOWNLOAD_HEADER_PROFILES, start=1):
+        for attempt in range(1, DOWNLOAD_RETRIES_PER_HEADER + 1):
+            if tmp_path.exists():
+                tmp_path.unlink()
+            try:
+                request = Request(url, headers=headers)
+                with urlopen(request, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response, open(tmp_path, "wb") as out_file:
+                    total_header = response.headers.get("Content-Length")
+                    total_size = int(total_header) if total_header and total_header.isdigit() else None
+                    downloaded = 0
+                    while True:
+                        chunk = response.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        out_file.write(chunk)
+                        downloaded += len(chunk)
+                        if total_size and progress_callback:
+                            percent = int(downloaded * 100 / total_size)
+                            progress_callback(min(percent, 100))
+                os.replace(tmp_path, dest_path)
+                return
+            except Exception as exc:
+                if isinstance(exc, HTTPError):
+                    err_text = f"HTTP {exc.code}: {exc.reason}"
+                else:
+                    err_text = str(exc)
+                attempt_errors.append(f"profile {profile_index} attempt {attempt}: {err_text}")
+                if attempt < DOWNLOAD_RETRIES_PER_HEADER:
+                    time.sleep(DOWNLOAD_RETRY_BACKOFF_SECONDS * attempt)
+
+    if tmp_path.exists():
+        tmp_path.unlink()
+    error_summary = "; ".join(attempt_errors) if attempt_errors else "Unknown error"
+    raise RuntimeError(f"Failed to download model: {error_summary}")
 
 def _find_existing_model(base_dir):
-    for name in (MODEL_FILENAME, *MODEL_LEGACY_FILENAMES):
-        candidate = base_dir / name
-        if candidate.exists() and candidate.stat().st_size >= MODEL_MIN_BYTES:
-            return candidate
-    return None
+    return shared_find_existing_model(base_dir)
 
 def _can_write_dir(path):
     try:
@@ -140,40 +191,45 @@ def _can_write_dir(path):
         return False
 
 def ensure_model_file(progress_callback=None, log_callback=None):
-    app_dir = get_app_dir()
-    existing_local = _find_existing_model(app_dir)
-    if existing_local:
-        return existing_local
-    existing_cache = _find_existing_model(MODEL_DIR)
-    if existing_cache:
-        return existing_cache
+    existing_model = shared_get_existing_model_path(app_file=__file__)
+    if existing_model:
+        return existing_model
 
-    if _can_write_dir(app_dir):
-        target_dir = app_dir
-    else:
-        target_dir = MODEL_DIR
-        target_dir.mkdir(parents=True, exist_ok=True)
-        if log_callback:
-            log_callback(f"App folder not writable. Using cache:\n{target_dir}")
+    attempted_dirs = []
+    candidate_dirs = get_model_candidate_dirs(app_file=__file__)
 
-    model_path = target_dir / MODEL_FILENAME
-    if model_path.exists():
-        model_path.unlink()
-    if log_callback:
-        log_callback(f"Downloading model (~165 MB) to:\n{model_path}")
-    download_file(MODEL_URL, model_path, progress_callback)
-    if not model_path.exists() or model_path.stat().st_size < MODEL_MIN_BYTES:
-        raise RuntimeError("Downloaded model file is incomplete or corrupted.")
-    return model_path
+    for index, target_dir in enumerate(candidate_dirs):
+        target_dir = Path(target_dir)
+        if not _can_write_dir(target_dir):
+            attempted_dirs.append(f"{target_dir} (not writable)")
+            if log_callback:
+                if index == 0 and len(candidate_dirs) > 1:
+                    log_callback(f"App folder not writable. Falling back to cache:\n{MODEL_DIR}")
+                else:
+                    log_callback(f"Skipping unwritable folder:\n{target_dir}")
+            continue
+
+        model_path = target_dir / MODEL_FILENAME
+        try:
+            if model_path.exists():
+                model_path.unlink()
+            if log_callback:
+                log_callback(f"Downloading model (~165 MB) to:\n{model_path}")
+            download_file(MODEL_URL, model_path, progress_callback)
+            if not model_path.exists() or model_path.stat().st_size < MODEL_MIN_BYTES:
+                raise RuntimeError("Downloaded model file is incomplete or corrupted.")
+            return model_path
+        except Exception as exc:
+            attempted_dirs.append(f"{target_dir} ({exc})")
+            if log_callback and index < len(candidate_dirs) - 1:
+                log_callback(f"Download failed in:\n{target_dir}\nTrying fallback location...")
+
+    if not attempted_dirs:
+        raise RuntimeError("No writable folder is available for model download.")
+    raise RuntimeError("Model download failed in all locations:\n" + "\n".join(attempted_dirs))
 
 def get_existing_model_path():
-    app_model = _find_existing_model(get_app_dir())
-    if app_model:
-        return app_model
-    cache_model = _find_existing_model(MODEL_DIR)
-    if cache_model:
-        return cache_model
-    return None
+    return shared_get_existing_model_path(app_file=__file__)
 
 class StdoutTee(io.TextIOBase):
     def __init__(self, original, line_handler):
@@ -331,31 +387,43 @@ def get_transcriptor():
         raise RuntimeError(f"PianoTranscription model failed to load: {_TRANSCRIPTOR_ERROR}")
     return _TRANSCRIPTOR
 
-def post_process_midi(midi_file_path, min_duration=0.05, min_velocity=20):
+def post_process_midi(midi_file_path, min_duration=0.05, min_velocity=20, stop_event=None):
+    if stop_event is not None and stop_event.is_set():
+        raise InterruptedError("Transcription stopped by user.")
+    pretty_midi = get_pretty_midi_module()
     midi_data = pretty_midi.PrettyMIDI(midi_file_path)
     for instrument in midi_data.instruments:
-
+        if stop_event is not None and stop_event.is_set():
+            raise InterruptedError("Transcription stopped by user.")
         notes = [note for note in instrument.notes if (note.end - note.start) >= min_duration and note.velocity >= min_velocity]
 
         notes.sort(key=lambda n: (n.pitch, n.start))
         filtered_notes = []
         last_end_by_pitch = {}
         for note in notes:
-
+            if stop_event is not None and stop_event.is_set():
+                raise InterruptedError("Transcription stopped by user.")
             last_end = last_end_by_pitch.get(note.pitch, -float('inf'))
             if note.start < last_end:
                 continue
             filtered_notes.append(note)
             last_end_by_pitch[note.pitch] = note.end
         instrument.notes = filtered_notes
+    if stop_event is not None and stop_event.is_set():
+        raise InterruptedError("Transcription stopped by user.")
     midi_data.write(midi_file_path)
 
-def convert_audio_to_midi(audio_file_path, custom_name=None, min_duration=0.02, min_velocity=20, progress_callback=None):
+def convert_audio_to_midi(audio_file_path, custom_name=None, min_duration=0.02, min_velocity=20, progress_callback=None, stop_event=None):
     if not os.path.isfile(audio_file_path):
         raise FileNotFoundError(f"Audio file not found: {audio_file_path}")
+    if stop_event is not None and stop_event.is_set():
+        raise InterruptedError("Transcription stopped by user.")
     transcriptor = get_transcriptor()
     sample_rate = get_pti_module().sample_rate
+    librosa = get_librosa_module()
     audio, _ = librosa.load(audio_file_path, sr=sample_rate)
+    if stop_event is not None and stop_event.is_set():
+        raise InterruptedError("Transcription stopped by user.")
     midi_dir = OUTPUT_MIDI_DIR
     os.makedirs(midi_dir, exist_ok=True)
     if custom_name:
@@ -364,22 +432,32 @@ def convert_audio_to_midi(audio_file_path, custom_name=None, min_duration=0.02, 
         base_name = os.path.splitext(os.path.basename(audio_file_path))[0]
         midi_base = safe_filename(base_name, fallback="midi")
     midi_file_name = ensure_unique_path(os.path.join(midi_dir, f"{midi_base}.mid"))
-    if progress_callback:
-        def handle_line(line):
-            match = SEGMENT_RE.search(line)
-            if match:
-                current = int(match.group(1))
-                total = int(match.group(2))
-                if total > 0:
-                    progress_callback(current, total)
-        stdout_tee = StdoutTee(sys.stdout, handle_line)
-        with contextlib.redirect_stdout(stdout_tee):
-            transcriptor.transcribe(audio, midi_file_name)
-        stdout_tee.flush()
-    else:
-        transcriptor.transcribe(audio, midi_file_name)
-    post_process_midi(midi_file_name, min_duration, min_velocity)
-    return midi_file_name
+    try:
+        if progress_callback:
+            def handle_line(line):
+                match = SEGMENT_RE.search(line)
+                if match:
+                    current = int(match.group(1))
+                    total = int(match.group(2))
+                    if total > 0:
+                        progress_callback(current, total)
+            stdout_tee = StdoutTee(sys.stdout, handle_line)
+            with contextlib.redirect_stdout(stdout_tee):
+                transcriptor.transcribe(audio, midi_file_name, stop_event=stop_event)
+            stdout_tee.flush()
+        else:
+            transcriptor.transcribe(audio, midi_file_name, stop_event=stop_event)
+        if stop_event is not None and stop_event.is_set():
+            raise InterruptedError("Transcription stopped by user.")
+        post_process_midi(midi_file_name, min_duration, min_velocity, stop_event=stop_event)
+        return midi_file_name
+    except InterruptedError:
+        try:
+            if os.path.exists(midi_file_name):
+                os.remove(midi_file_name)
+        except Exception:
+            pass
+        raise
 
 class AudioToMidiApp:
     def __init__(self, root):
@@ -406,13 +484,164 @@ class AudioToMidiApp:
         self.ui_queue = queue.Queue()
         self.config = load_config()
         self.model_download_in_progress = False
+        self.transcription_in_progress = False
+        self.transcription_stop_event = threading.Event()
+        self.update_check_in_progress = False
+        self.startup_update_check_completed = False
+        self.main_ui_visible = False
+        self.root.after(100, self.process_ui_queue)
+        self.show_loading_screen()
+        self.root.after(80, self.deferred_startup)
+
+    def show_loading_screen(self):
+        for widget in self.root.winfo_children():
+            widget.destroy()
+        theme = self.theme
+        fonts = self.fonts
+        frame = tk.Frame(self.root, bg=theme["bg"])
+        frame.pack(fill="both", expand=True)
+        tk.Label(
+            frame,
+            text="A2M (Audio To Midi)",
+            font=fonts["title"],
+            fg=theme["text"],
+            bg=theme["bg"],
+        ).pack(pady=(70, 10))
+        tk.Label(
+            frame,
+            text="Loading, please wait...",
+            font=fonts["subtitle"],
+            fg=theme["muted"],
+            bg=theme["bg"],
+        ).pack(pady=(0, 12))
+        self.loading_progress = ttk.Progressbar(
+            frame,
+            mode="indeterminate",
+            length=280,
+            style="Modern.Small.Horizontal.TProgressbar",
+        )
+        self.loading_progress.pack(pady=(0, 20))
+        self.loading_progress.start(10)
+
+    def deferred_startup(self):
         set_device_preference(self.config.get("device_preference", "cpu"))
         set_gpu_batch_size(self.config.get("gpu_batch_size", 4))
+        if get_existing_model_path():
+            self.show_main_ui()
+        else:
+            self.show_model_download_prompt()
+
+    def show_main_ui(self):
+        if getattr(self, "loading_progress", None):
+            try:
+                self.loading_progress.stop()
+            except Exception:
+                pass
         self.setup_widgets()
         self.update_model_status_label()
+        if self.file_display_name and self.file_path_full:
+            self.file_label.config(text=self.file_display_name)
+            self.file_path_label.config(text=self.file_path_full)
+            self.root.after_idle(self.update_file_label)
+            self.root.after_idle(self.update_file_path_label)
         self.set_controls_state(True)
-        self.root.after(100, self.process_ui_queue)
-        self.root.after(400, self.check_model_on_start)
+        self.main_ui_visible = True
+        if not self.startup_update_check_completed:
+            self.startup_update_check_completed = True
+            if self.config.get("auto_check_updates", True):
+                self.root.after(900, lambda: self.check_for_updates(manual=False))
+
+    def show_model_download_prompt(self):
+        if self.model_download_in_progress:
+            return
+        self.main_ui_visible = False
+        for widget in self.root.winfo_children():
+            widget.destroy()
+        theme = self.theme
+        fonts = self.fonts
+        app_dir = get_app_dir()
+        install_hint = app_dir if _can_write_dir(app_dir) else MODEL_DIR
+        container = tk.Frame(self.root, bg=theme["bg"], padx=26, pady=24)
+        container.pack(fill="both", expand=True)
+
+        tk.Label(
+            container,
+            text="Transcription model required",
+            font=fonts["title"],
+            fg=theme["text"],
+            bg=theme["bg"],
+            anchor="w",
+            justify="left",
+        ).pack(anchor="w", pady=(0, 12))
+
+        message = (
+            "A2M needs the transcription model before it can convert audio.\n\n"
+            f"It will be downloaded once (~165 MB) to:\n{install_hint}\n\n"
+            "Would you like to download it now?"
+        )
+        tk.Label(
+            container,
+            text=message,
+            font=fonts["body"],
+            fg=theme["text"],
+            bg=theme["bg"],
+            anchor="w",
+            justify="left",
+            wraplength=620,
+        ).pack(anchor="w", fill="x", pady=(0, 20))
+
+        button_row = tk.Frame(container, bg=theme["bg"])
+        button_row.pack(anchor="w")
+
+        def on_yes():
+            self.show_main_ui()
+            self.start_model_download()
+
+        def on_no():
+            confirm = messagebox.askyesno(
+                "Exit A2M?",
+                "Without the transcription model, A2M cannot convert audio.\n\nAre you sure you want to exit?",
+            )
+            if confirm:
+                self.root.after(20, self.root.destroy)
+
+        yes_button = tk.Button(
+            button_row,
+            text="Yes",
+            command=on_yes,
+            font=fonts["button"],
+            bg=theme["accent"],
+            fg=theme["bg"],
+            activebackground=theme["accent_hover"],
+            activeforeground=theme["bg"],
+            relief="flat",
+            bd=0,
+            padx=14,
+            pady=5,
+            width=12,
+            cursor="hand2",
+        )
+        yes_button.pack(side="left", padx=(0, 8))
+        self.add_hover_effect(yes_button, bg_normal=theme["accent"], fg_normal=theme["bg"], bg_hover=theme["accent_hover"], fg_hover=theme["bg"])
+
+        no_button = tk.Button(
+            button_row,
+            text="No",
+            command=on_no,
+            font=fonts["button"],
+            bg=theme["surface_alt"],
+            fg=theme["text"],
+            activebackground=theme["surface_alt_hover"],
+            activeforeground=theme["text"],
+            relief="flat",
+            bd=0,
+            padx=14,
+            pady=5,
+            width=12,
+            cursor="hand2",
+        )
+        no_button.pack(side="left")
+        self.add_hover_effect(no_button, bg_normal=theme["surface_alt"], fg_normal=theme["text"], bg_hover=theme["surface_alt_hover"], fg_hover=theme["accent"])
 
     def setup_widgets(self):
         for widget in self.root.winfo_children():
@@ -502,8 +731,13 @@ class AudioToMidiApp:
         )
         self.file_button.grid(row=0, column=1, sticky="e", padx=16, pady=14)
 
+        action_row = tk.Frame(main_frame, bg=theme["bg"])
+        action_row.grid(row=1, column=0, sticky="ew", pady=(0, 10))
+        action_row.grid_columnconfigure(0, weight=1)
+        action_row.grid_columnconfigure(1, weight=0)
+
         self.convert_button = tk.Button(
-            main_frame,
+            action_row,
             text="Convert to MIDI",
             command=self.convert,
             font=fonts["button"],
@@ -517,7 +751,25 @@ class AudioToMidiApp:
             pady=6,
             cursor="hand2",
         )
-        self.convert_button.grid(row=1, column=0, sticky="ew", pady=(0, 10))
+        self.convert_button.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+
+        self.stop_button = tk.Button(
+            action_row,
+            text="STOP",
+            command=self.stop_transcription,
+            font=fonts["button"],
+            bg=theme["danger"],
+            fg=theme["bg"],
+            activebackground=theme["danger_hover"],
+            activeforeground=theme["bg"],
+            relief="flat",
+            bd=0,
+            padx=14,
+            pady=6,
+            cursor="hand2",
+            state=tk.DISABLED,
+        )
+        self.stop_button.grid(row=0, column=1, sticky="e")
 
         self.progress = tk.Canvas(
             main_frame,
@@ -575,10 +827,11 @@ class AudioToMidiApp:
         official_link = tk.Label(bottom_right, text="Official page", font=fonts["caption"], fg=theme["accent"], bg=theme["bg"], cursor="hand2")
         official_link.pack(side="right", anchor="se", padx=(0, 8))
         official_link.bind("<Button-1>", lambda e: webbrowser.open("https://justagwas.com/projects/a2m"))
-        version_label = tk.Label(bottom_right, text="v1.0.0", font=fonts["caption"], fg=theme["muted"], bg=theme["bg"])
+        version_label = tk.Label(bottom_right, text=f"v{APP_VERSION}", font=fonts["caption"], fg=theme["muted"], bg=theme["bg"])
         version_label.pack(side="right", anchor="se", padx=(0, 8))
         self.add_hover_effect(self.file_button, bg_normal=theme["surface_alt"], fg_normal=theme["text"], bg_hover=theme["surface_alt_hover"], fg_hover=theme["accent"])
         self.add_hover_effect(self.convert_button, bg_normal=theme["accent"], fg_normal=theme["bg"], bg_hover=theme["accent_hover"], fg_hover=theme["bg"])
+        self.add_hover_effect(self.stop_button, bg_normal=theme["danger"], fg_normal=theme["bg"], bg_hover=theme["danger_hover"], fg_hover=theme["bg"])
         self.add_hover_effect(official_link, bg_normal=theme["bg"], fg_normal=theme["accent"], bg_hover=theme["bg"], fg_hover=theme["text"])
 
         def update_wrap(event):
@@ -677,8 +930,10 @@ class AudioToMidiApp:
         file_state = tk.NORMAL if enabled else tk.DISABLED
         allow_convert = enabled and self._can_convert()
         convert_state = tk.NORMAL if allow_convert else tk.DISABLED
+        stop_state = tk.NORMAL if self.transcription_in_progress else tk.DISABLED
         self.convert_button.config(state=convert_state)
         self.file_button.config(state=file_state)
+        self.stop_button.config(state=stop_state)
         self.file_label.config(fg=theme["text"] if enabled else theme["disabled_fg"])
         self.file_path_label.config(fg=theme["muted"] if enabled else theme["disabled_fg"])
         if not enabled:
@@ -686,8 +941,16 @@ class AudioToMidiApp:
             self.file_button.unbind("<Leave>")
             self.convert_button.unbind("<Enter>")
             self.convert_button.unbind("<Leave>")
+            if stop_state != tk.NORMAL:
+                self.stop_button.unbind("<Enter>")
+                self.stop_button.unbind("<Leave>")
             self.file_button.config(bg=theme["disabled_bg"], fg=theme["disabled_fg"], activebackground=theme["disabled_bg"], activeforeground=theme["disabled_fg"], cursor="")
             self.convert_button.config(bg=theme["disabled_bg"], fg=theme["disabled_fg"], activebackground=theme["disabled_bg"], activeforeground=theme["disabled_fg"], cursor="")
+            if stop_state == tk.NORMAL:
+                self.stop_button.config(bg=theme["danger"], fg=theme["bg"], activebackground=theme["danger_hover"], activeforeground=theme["bg"], cursor="hand2")
+                self.add_hover_effect(self.stop_button, bg_normal=theme["danger"], fg_normal=theme["bg"], bg_hover=theme["danger_hover"], fg_hover=theme["bg"])
+            else:
+                self.stop_button.config(bg=theme["disabled_bg"], fg=theme["disabled_fg"], activebackground=theme["disabled_bg"], activeforeground=theme["disabled_fg"], cursor="")
         else:
             self.file_button.config(bg=theme["surface_alt"], fg=theme["text"], activebackground=theme["surface_alt_hover"], activeforeground=theme["text"], cursor="hand2")
             self.add_hover_effect(self.file_button, bg_normal=theme["surface_alt"], fg_normal=theme["text"], bg_hover=theme["surface_alt_hover"], fg_hover=theme["accent"])
@@ -698,6 +961,17 @@ class AudioToMidiApp:
                 self.convert_button.unbind("<Enter>")
                 self.convert_button.unbind("<Leave>")
                 self.convert_button.config(bg=theme["disabled_bg"], fg=theme["disabled_fg"], activebackground=theme["disabled_bg"], activeforeground=theme["disabled_fg"], cursor="")
+            self.stop_button.unbind("<Enter>")
+            self.stop_button.unbind("<Leave>")
+            self.stop_button.config(bg=theme["disabled_bg"], fg=theme["disabled_fg"], activebackground=theme["disabled_bg"], activeforeground=theme["disabled_fg"], cursor="")
+
+    def stop_transcription(self):
+        if not self.transcription_in_progress:
+            return
+        self.transcription_stop_event.set()
+        self.set_controls_state(False)
+        self.log_console("Stopping transcription...\nPlease wait...")
+        self.update_progress(self._progress_value, "Stopping...")
 
     def choose_file(self):
         if not self.controls_enabled:
@@ -741,97 +1015,199 @@ class AudioToMidiApp:
             self.root.attributes("-disabled", True)
         except tk.TclError:
             pass
-
         container = tk.Frame(window, bg=theme["bg"], padx=20, pady=16)
         container.pack(fill="both", expand=True)
 
-        title = tk.Label(container, text="Device", font=fonts["label"], fg=theme["text"], bg=theme["bg"])
-        title.pack(anchor="w", pady=(0, 6))
+        header = tk.Frame(container, bg=theme["bg"])
+        header.pack(fill="x", pady=(0, 10))
+        tk.Label(
+            header,
+            text="Settings",
+            font=fonts["title"],
+            fg=theme["text"],
+            bg=theme["bg"],
+        ).pack(anchor="w")
+        tk.Label(
+            header,
+            text="Choose device, GPU performance, and update preferences.",
+            font=fonts["caption"],
+            fg=theme["muted"],
+            bg=theme["bg"],
+        ).pack(anchor="w", pady=(4, 0))
 
         device_var = tk.StringVar(value=str(self.config.get("device_preference", "cpu")).lower())
         batch_var = tk.IntVar(value=int(self.config.get("gpu_batch_size", 4)))
-        radio_frame = tk.Frame(container, bg=theme["bg"])
-        radio_frame.pack(anchor="w", fill="x")
-        cpu_radio = tk.Radiobutton(
-            radio_frame,
-            text="CPU (default)",
-            variable=device_var,
-            value="cpu",
-            font=fonts["body"],
-            fg=theme["text"],
-            bg=theme["bg"],
-            selectcolor=theme["surface_alt"],
-            activebackground=theme["bg"],
-            activeforeground=theme["text"],
-            highlightthickness=0,
-        )
-        gpu_radio = tk.Radiobutton(
-            radio_frame,
-            text="GPU (faster, NVIDIA only)",
-            variable=device_var,
-            value="gpu",
-            font=fonts["body"],
-            fg=theme["text"],
-            bg=theme["bg"],
-            selectcolor=theme["surface_alt"],
-            activebackground=theme["bg"],
-            activeforeground=theme["text"],
-            highlightthickness=0,
-        )
-        cpu_radio.pack(anchor="w")
-        gpu_radio.pack(anchor="w")
+        runtime_state = {
+            "checking": True,
+            "torch_available": False,
+            "cuda_available": False,
+        }
+        auto_update_var = tk.BooleanVar(value=bool(self.config.get("auto_check_updates", True)))
 
-        torch_available = is_torch_available()
-        cuda_available = is_cuda_available() if torch_available else False
+        def persist_settings(preference=None, batch=None):
+            changed = False
+            if preference is not None:
+                if self.config.get("device_preference") != preference:
+                    self.config["device_preference"] = preference
+                    changed = True
+                set_device_preference(preference)
+            if batch is not None:
+                if int(self.config.get("gpu_batch_size", 4)) != int(batch):
+                    self.config["gpu_batch_size"] = int(batch)
+                    changed = True
+                set_gpu_batch_size(batch)
+            if changed:
+                save_config(self.config)
+
+        def on_toggle_auto_updates():
+            enabled = bool(auto_update_var.get())
+            if bool(self.config.get("auto_check_updates", True)) != enabled:
+                self.config["auto_check_updates"] = enabled
+                save_config(self.config)
+
+        device_card = tk.Frame(
+            container,
+            bg=theme["surface"],
+            highlightthickness=1,
+            highlightbackground=theme["border"],
+        )
+        device_card.pack(fill="x")
+
+        device_inner = tk.Frame(device_card, bg=theme["surface"], padx=14, pady=12)
+        device_inner.pack(fill="x")
+
+        tk.Label(
+            device_inner,
+            text="Device",
+            font=fonts["label"],
+            fg=theme["muted"],
+            bg=theme["surface"],
+        ).pack(anchor="w")
+
+        selector_row = tk.Frame(device_inner, bg=theme["surface"])
+        selector_row.pack(fill="x", pady=(8, 8))
+        selector_row.grid_columnconfigure(0, weight=1)
+        selector_row.grid_columnconfigure(1, weight=1)
+
+        cpu_button = tk.Button(
+            selector_row,
+            text="CPU\nStable and compatible",
+            justify="left",
+            anchor="w",
+            font=fonts["body"],
+            relief="flat",
+            bd=0,
+            padx=12,
+            pady=10,
+            cursor="hand2",
+            command=lambda: on_device_click("cpu"),
+        )
+        cpu_button.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+
+        gpu_button = tk.Button(
+            selector_row,
+            text="GPU\nFaster (NVIDIA + CUDA)",
+            justify="left",
+            anchor="w",
+            font=fonts["body"],
+            relief="flat",
+            bd=0,
+            padx=12,
+            pady=10,
+            cursor="hand2",
+            command=lambda: on_device_click("gpu"),
+        )
+        gpu_button.grid(row=0, column=1, sticky="ew", padx=(6, 0))
 
         info_label = tk.Label(
+            device_inner,
+            text="Checking PyTorch and CUDA support...",
+            font=fonts["caption"],
+            fg=theme["muted"],
+            bg=theme["surface"],
+            wraplength=520,
+            justify="left",
+        )
+        info_label.pack(anchor="w")
+
+        guide_row = tk.Frame(device_inner, bg=theme["surface"])
+        guide_row.pack(anchor="w", pady=(8, 0))
+        pytorch_link = tk.Label(
+            guide_row,
+            text="PyTorch setup guide",
+            font=fonts["caption"],
+            fg=theme["accent"],
+            bg=theme["surface"],
+            cursor="hand2",
+        )
+        pytorch_link.pack(side="left", padx=(0, 14))
+        pytorch_link.bind("<Button-1>", lambda _e: self.open_pytorch_guide())
+        self.add_hover_effect(
+            pytorch_link,
+            bg_normal=theme["surface"],
+            fg_normal=theme["accent"],
+            bg_hover=theme["surface"],
+            fg_hover=theme["text"],
+        )
+
+        gpu_guide_link = tk.Label(
+            guide_row,
+            text="GPU setup guide",
+            font=fonts["caption"],
+            fg=theme["accent"],
+            bg=theme["surface"],
+            cursor="hand2",
+        )
+        gpu_guide_link.pack(side="left")
+        gpu_guide_link.bind("<Button-1>", lambda _e: self.open_gpu_guide())
+        self.add_hover_effect(
+            gpu_guide_link,
+            bg_normal=theme["surface"],
+            fg_normal=theme["accent"],
+            bg_hover=theme["surface"],
+            fg_hover=theme["text"],
+        )
+
+        batch_card = tk.Frame(
             container,
-            text="CPU mode uses the bundled PyTorch runtime. GPU mode needs a CUDA-enabled PyTorch build and NVIDIA drivers.",
-            font=fonts["caption"],
-            fg=theme["muted"],
-            bg=theme["bg"],
-            wraplength=420,
-            justify="left",
+            bg=theme["surface"],
+            highlightthickness=1,
+            highlightbackground=theme["border"],
         )
-        info_label.pack(anchor="w", pady=(8, 0))
+        batch_card.pack(fill="x", pady=(12, 0))
+        batch_inner = tk.Frame(batch_card, bg=theme["surface"], padx=14, pady=12)
+        batch_inner.pack(fill="x")
 
-        def update_info(*_args):
-            if not torch_available:
-                info_label.config(text="PyTorch is missing. CPU/GPU requires it. Select GPU to see setup help.")
-            elif device_var.get() == "gpu":
-                if not cuda_available:
-                    info_label.config(text="GPU mode is unavailable because NVIDIA/CUDA was not detected.")
-                else:
-                    info_label.config(text="GPU mode is enabled. CUDA-enabled PyTorch is installed.")
-            else:
-                info_label.config(text="CPU mode uses the bundled PyTorch runtime.")
-        device_var.trace_add("write", update_info)
-        update_info()
-
-        batch_frame = tk.Frame(container, bg=theme["bg"])
-        batch_frame.pack(anchor="w", pady=(12, 0), fill="x")
-        batch_label = tk.Label(batch_frame, text="GPU batch size", font=fonts["label"], fg=theme["text"], bg=theme["bg"])
-        batch_label.pack(anchor="w")
-        batch_hint = tk.Label(
-            batch_frame,
-            text="Higher values can be faster on GPU but use more VRAM. Default: 4.",
-            font=fonts["caption"],
+        batch_header = tk.Frame(batch_inner, bg=theme["surface"])
+        batch_header.pack(fill="x")
+        tk.Label(
+            batch_header,
+            text="GPU batch size",
+            font=fonts["label"],
             fg=theme["muted"],
-            bg=theme["bg"],
-            wraplength=420,
-            justify="left",
-        )
-        batch_hint.pack(anchor="w", pady=(2, 6))
+            bg=theme["surface"],
+        ).pack(side="left")
         batch_value_label = tk.Label(
-            batch_frame,
+            batch_header,
             text=f"Value: {batch_var.get()}",
             font=fonts["caption"],
-            fg=theme["muted"],
-            bg=theme["bg"],
+            fg=theme["text"],
+            bg=theme["surface"],
         )
-        batch_value_label.pack(anchor="w", pady=(0, 4))
+        batch_value_label.pack(side="right")
+
+        tk.Label(
+            batch_inner,
+            text="Higher values can speed up GPU transcription but use more VRAM.",
+            font=fonts["caption"],
+            fg=theme["muted"],
+            bg=theme["surface"],
+            wraplength=520,
+            justify="left",
+        ).pack(anchor="w", pady=(6, 6))
+
         batch_slider = tk.Scale(
-            batch_frame,
+            batch_inner,
             from_=1,
             to=32,
             orient="horizontal",
@@ -842,33 +1218,77 @@ class AudioToMidiApp:
             fg=theme["text"],
             relief="flat",
             bd=0,
-            length=360,
-            sliderlength=48,
-            width=20,
+            length=420,
+            sliderlength=38,
+            width=16,
             highlightthickness=0,
             troughcolor=theme["surface_alt"],
-            activebackground=theme["surface_alt_hover"],
+            activebackground=theme["accent"],
         )
-        batch_slider.pack(anchor="w")
+        batch_slider.pack(anchor="w", fill="x")
         batch_slider.config(showvalue=0)
 
-        def update_batch_label(*_args):
-            batch_value_label.config(text=f"Value: {batch_var.get()}")
+        updates_card = tk.Frame(
+            container,
+            bg=theme["surface"],
+            highlightthickness=1,
+            highlightbackground=theme["border"],
+        )
+        updates_card.pack(fill="x", pady=(12, 0))
+        updates_inner = tk.Frame(updates_card, bg=theme["surface"], padx=14, pady=12)
+        updates_inner.pack(fill="x")
 
-        batch_var.trace_add("write", update_batch_label)
-        update_batch_label()
+        tk.Label(
+            updates_inner,
+            text="Updates",
+            font=fonts["label"],
+            fg=theme["muted"],
+            bg=theme["surface"],
+        ).pack(anchor="w")
 
-        def update_batch_state(*_args):
-            if not torch_available or device_var.get() != "gpu" or not cuda_available:
-                batch_slider.config(state="disabled")
-            else:
-                batch_slider.config(state="normal")
-        device_var.trace_add("write", update_batch_state)
-        update_batch_state()
+        auto_update_cb = tk.Checkbutton(
+            updates_inner,
+            text="Automatically check for updates on startup",
+            variable=auto_update_var,
+            command=on_toggle_auto_updates,
+            font=fonts["body"],
+            bg=theme["surface"],
+            fg=theme["text"],
+            selectcolor=theme["surface_alt"],
+            activebackground=theme["surface"],
+            activeforeground=theme["text"],
+            highlightthickness=0,
+        )
+        auto_update_cb.pack(anchor="w", pady=(6, 8))
+
+        check_updates_btn = tk.Button(
+            updates_inner,
+            text="Check for updates now",
+            command=lambda: self.check_for_updates(manual=True),
+            font=fonts["button"],
+            bg=theme["surface_alt"],
+            fg=theme["text"],
+            activebackground=theme["surface_alt_hover"],
+            activeforeground=theme["text"],
+            relief="flat",
+            bd=0,
+            padx=12,
+            pady=4,
+            cursor="hand2",
+        )
+        check_updates_btn.pack(anchor="w")
+        self.add_hover_effect(
+            check_updates_btn,
+            bg_normal=theme["surface_alt"],
+            fg_normal=theme["text"],
+            bg_hover=theme["surface_alt_hover"],
+            fg_hover=theme["accent"],
+        )
+
         button_row = tk.Frame(container, bg=theme["bg"])
-        button_row.pack(anchor="e", pady=(16, 0), fill="x")
+        button_row.pack(anchor="e", pady=(14, 0), fill="x")
 
-        def on_back():
+        def close_settings():
             try:
                 try:
                     self.root.attributes("-disabled", False)
@@ -880,67 +1300,140 @@ class AudioToMidiApp:
             except Exception:
                 pass
 
-        back_btn = tk.Label(button_row, text="Back", font=fonts["caption"], fg=theme["accent"], bg=theme["bg"], cursor="hand2")
+        back_btn = tk.Label(
+            button_row,
+            text="Back",
+            font=fonts["caption"],
+            fg=theme["accent"],
+            bg=theme["bg"],
+            cursor="hand2",
+        )
         back_btn.pack(side="left")
-        back_btn.bind("<Button-1>", lambda _e: on_back())
-        self.add_hover_effect(back_btn, bg_normal=theme["bg"], fg_normal=theme["accent"], bg_hover=theme["bg"], fg_hover=theme["text"])
+        back_btn.bind("<Button-1>", lambda _e: close_settings())
+        self.add_hover_effect(
+            back_btn,
+            bg_normal=theme["bg"],
+            fg_normal=theme["accent"],
+            bg_hover=theme["bg"],
+            fg_hover=theme["text"],
+        )
 
-        def persist_settings(preference=None, batch=None):
-            if preference is not None:
-                self.config["device_preference"] = preference
-                set_device_preference(preference)
-            if batch is not None:
-                self.config["gpu_batch_size"] = batch
-                set_gpu_batch_size(batch)
-            save_config(self.config)
+        def update_batch_label(*_args):
+            batch_value_label.config(text=f"Value: {batch_var.get()}")
 
-        self._device_change_guard = False
+        def style_device_button(button, selected, enabled=True):
+            if selected:
+                bg = theme["accent"]
+                fg = theme["bg"]
+                hover_bg = theme["accent_hover"]
+                hover_fg = theme["bg"]
+            else:
+                bg = theme["surface_alt"] if enabled else theme["disabled_bg"]
+                fg = theme["text"] if enabled else theme["disabled_fg"]
+                hover_bg = theme["surface_alt_hover"] if enabled else theme["disabled_bg"]
+                hover_fg = theme["text"] if enabled else theme["disabled_fg"]
+            button.config(
+                bg=bg,
+                fg=fg,
+                activebackground=hover_bg,
+                activeforeground=hover_fg,
+                state=tk.NORMAL if enabled else tk.DISABLED,
+                cursor="hand2" if enabled else "",
+            )
 
-        def handle_device_change(*_args):
-            if self._device_change_guard:
-                return
-            preference = device_var.get()
-            if preference == "gpu":
-                if not torch_available:
+        def update_runtime_ui():
+            selected = device_var.get()
+            gpu_selectable = not runtime_state["checking"]
+            style_device_button(cpu_button, selected == "cpu", enabled=True)
+            style_device_button(gpu_button, selected == "gpu", enabled=gpu_selectable)
+
+            if runtime_state["checking"]:
+                info_label.config(text="Checking PyTorch and CUDA support...")
+            elif not runtime_state["torch_available"]:
+                info_label.config(text="PyTorch is missing. Install PyTorch before enabling GPU mode.")
+            elif selected == "gpu":
+                if runtime_state["cuda_available"]:
+                    info_label.config(text="GPU mode enabled. CUDA-enabled PyTorch was detected.")
+                else:
+                    info_label.config(text="GPU mode selected, but CUDA was not detected on this system.")
+            else:
+                info_label.config(text="CPU mode is selected. This is the most compatible option.")
+
+            can_use_gpu = runtime_state["torch_available"] and runtime_state["cuda_available"]
+            if selected == "gpu" and can_use_gpu:
+                batch_slider.config(state=tk.NORMAL)
+                batch_value_label.config(fg=theme["text"])
+            else:
+                batch_slider.config(state=tk.DISABLED)
+                batch_value_label.config(fg=theme["disabled_fg"])
+
+        def set_device(preference, user_initiated=False):
+            pref = (preference or "cpu").lower()
+            if pref not in ("cpu", "gpu"):
+                pref = "cpu"
+
+            if user_initiated and pref == "gpu":
+                if runtime_state["checking"]:
+                    messagebox.showinfo("Checking support", "Still checking PyTorch/CUDA support. Please try again in a moment.")
+                    return
+                if not runtime_state["torch_available"]:
                     messagebox.showwarning(
                         "PyTorch required",
-                        "PyTorch is not installed. Please install it first, then select GPU again.",
+                        "PyTorch is not installed. Install it first, then select GPU mode.",
                     )
                     self.open_pytorch_guide()
-                    self._device_change_guard = True
-                    device_var.set("cpu")
-                    self._device_change_guard = False
-                    preference = "cpu"
-                elif not cuda_available:
+                    pref = "cpu"
+                elif not runtime_state["cuda_available"]:
+                    messagebox.showwarning(
+                        "CUDA not available",
+                        "GPU mode requires an NVIDIA GPU and a CUDA-enabled PyTorch build.",
+                    )
                     self.open_gpu_guide()
-                    self._device_change_guard = True
-                    device_var.set("cpu")
-                    self._device_change_guard = False
-                    preference = "cpu"
-                else:
-                    self.open_gpu_guide()
-            persist_settings(preference=preference)
-            update_info()
-            update_batch_state()
+                    pref = "cpu"
 
-        device_var.trace_add("write", handle_device_change)
+            if device_var.get() != pref:
+                device_var.set(pref)
+            persist_settings(preference=pref)
+            update_runtime_ui()
+
+        def on_device_click(preference):
+            set_device(preference, user_initiated=True)
 
         def on_slider_release(_event=None):
-            if device_var.get() == "gpu" and torch_available and cuda_available:
+            if device_var.get() == "gpu" and runtime_state["torch_available"] and runtime_state["cuda_available"]:
                 persist_settings(batch=int(batch_var.get()))
 
-        batch_slider.bind("<ButtonRelease-1>", on_slider_release)
+        def detect_runtime():
+            torch_available = is_torch_available()
+            cuda_available = is_cuda_available() if torch_available else False
 
-        window.protocol("WM_DELETE_WINDOW", on_back)
+            def apply_runtime_state():
+                if not window.winfo_exists():
+                    return
+                runtime_state["checking"] = False
+                runtime_state["torch_available"] = torch_available
+                runtime_state["cuda_available"] = cuda_available
+                update_runtime_ui()
+
+            self.root.after(0, apply_runtime_state)
+
+        batch_var.trace_add("write", update_batch_label)
+        batch_slider.bind("<ButtonRelease-1>", on_slider_release)
+        update_batch_label()
+        update_runtime_ui()
+        set_device(device_var.get(), user_initiated=False)
+
+        threading.Thread(target=detect_runtime, daemon=True).start()
+
+        window.protocol("WM_DELETE_WINDOW", close_settings)
         window.update_idletasks()
         self.root.update_idletasks()
-        win_w = max(window.winfo_reqwidth(), 460)
-        win_h = max(window.winfo_reqheight(), 260)
+        win_w = max(window.winfo_reqwidth(), 620)
+        win_h = max(window.winfo_reqheight(), 500)
         window.minsize(win_w, win_h)
         root_x = self.root.winfo_rootx()
         root_y = self.root.winfo_rooty()
         root_w = self.root.winfo_width()
-        root_h = self.root.winfo_height()
         x = root_x + root_w - win_w - 20
         y = root_y + 40
         if x < 20:
@@ -1056,7 +1549,7 @@ class AudioToMidiApp:
             text=(
                 "A2M needs PyTorch to run the transcription model.\n\n"
                 "1) Install Python (64-bit) from python.org.\n"
-                "2) During install, check “Add Python to PATH”.\n"
+                "2) During install, check \"Add Python to PATH\".\n"
                 "3) Open the PyTorch website and select your system.\n"
                 "4) Follow the instructions on the PyTorch page.\n"
                 "5) Restart A2M when installation finishes."
@@ -1201,20 +1694,94 @@ class AudioToMidiApp:
                     messagebox.showinfo("Info", payload)
                 elif action == "model_status":
                     self.update_model_status_label()
+                elif action == "update_prompt":
+                    if isinstance(payload, tuple) and len(payload) == 2:
+                        latest_version, download_url = payload
+                        self.prompt_update_download(latest_version, download_url)
+                elif action == "update_check_done":
+                    self.update_check_in_progress = False
         except queue.Empty:
             pass
         self.root.after(100, self.process_ui_queue)
 
-    def prompt_model_download(self, message):
-        return messagebox.askyesno("Download model", message)
+    @staticmethod
+    def _normalize_version(version_text):
+        text = str(version_text or "").strip()
+        if text.lower().startswith("v"):
+            text = text[1:]
+        return text
 
-    def check_model_on_start(self):
-        if get_existing_model_path():
+    @classmethod
+    def _parse_version_tuple(cls, version_text):
+        normalized = cls._normalize_version(version_text)
+        if not normalized or not re.match(r"^\d+(\.\d+)*$", normalized):
+            return None
+        return tuple(int(part) for part in normalized.split("."))
+
+    @classmethod
+    def _is_newer_version(cls, latest_version, current_version):
+        latest_tuple = cls._parse_version_tuple(latest_version)
+        current_tuple = cls._parse_version_tuple(current_version)
+        if not latest_tuple or not current_tuple:
+            return False
+        width = max(len(latest_tuple), len(current_tuple))
+        latest_tuple = latest_tuple + (0,) * (width - len(latest_tuple))
+        current_tuple = current_tuple + (0,) * (width - len(current_tuple))
+        return latest_tuple > current_tuple
+
+    def _fetch_update_manifest(self):
+        errors = []
+        for headers in DOWNLOAD_HEADER_PROFILES:
+            try:
+                request = Request(UPDATE_MANIFEST_URL, headers=headers)
+                with urlopen(request, timeout=UPDATE_CHECK_TIMEOUT_SECONDS) as response:
+                    payload = response.read().decode("utf-8", errors="replace")
+                data = json.loads(payload)
+                latest_version = str(data.get("version", "")).strip()
+                download_url = str(data.get("url") or data.get("download_url") or "").strip()
+                if not latest_version or not download_url:
+                    raise RuntimeError("Manifest is missing 'version' or 'url'.")
+                return latest_version, download_url
+            except Exception as exc:
+                errors.append(str(exc))
+        if errors:
+            raise RuntimeError(errors[-1])
+        raise RuntimeError("Unable to fetch update manifest.")
+
+    def prompt_update_download(self, latest_version, download_url):
+        latest_display = self._normalize_version(latest_version) or str(latest_version)
+        prompt = (
+            f"A newer version - v{latest_display} is available!\n"
+            "Would you like to download it now?"
+        )
+        if messagebox.askyesno("Update available", prompt):
+            try:
+                webbrowser.open(download_url)
+                self.root.after(100, self.root.destroy)
+            except Exception as exc:
+                messagebox.showerror("Update error", f"Failed to open download link:\n{exc}")
+
+    def check_for_updates(self, manual=False):
+        if self.update_check_in_progress:
+            if manual:
+                messagebox.showinfo("Update check", "An update check is already in progress.")
             return
-        if self.model_download_in_progress:
-            return
-        if self.prompt_model_download("The transcription model is REQUIRED. Download now (~165 MB)?"):
-            self.start_model_download()
+        self.update_check_in_progress = True
+
+        def worker():
+            try:
+                latest_version, download_url = self._fetch_update_manifest()
+                if self._is_newer_version(latest_version, APP_VERSION):
+                    self.enqueue_ui("update_prompt", (latest_version, download_url))
+                elif manual:
+                    self.enqueue_ui("info", "You are already on the latest version.")
+            except Exception as exc:
+                if manual:
+                    self.enqueue_ui("error", f"Unable to check for updates:\n{exc}")
+            finally:
+                self.enqueue_ui("update_check_done", None)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def start_model_download(self):
         if self.model_download_in_progress:
@@ -1246,11 +1813,14 @@ class AudioToMidiApp:
         if self.model_download_in_progress:
             messagebox.showinfo("Download in progress", "Model is downloading. Please wait for it to finish.")
             return
+        if self.transcription_in_progress:
+            return
         if not get_existing_model_path():
-            if self.prompt_model_download("The transcription model is REQUIRED. Download now (~165 MB)?"):
-                self.start_model_download()
+            self.show_model_download_prompt()
             return
 
+        self.transcription_stop_event.clear()
+        self.transcription_in_progress = True
         self.set_controls_state(False)
         self.update_progress(0, "0%")
         try:
@@ -1258,6 +1828,8 @@ class AudioToMidiApp:
         except Exception as exc:
             self.log_console(f"Error: {exc}")
             self.enqueue_ui("error", str(exc))
+            self.transcription_in_progress = False
+            self.transcription_stop_event.clear()
             self.set_controls_state(True)
             self.update_progress(0, "0%")
             return
@@ -1286,14 +1858,23 @@ class AudioToMidiApp:
                 percent = max(0, min(percent, 100))
                 self.enqueue_ui("progress", (percent, f"Transcribing {percent}%"))
 
-            midi_path = convert_audio_to_midi(audio_path, progress_callback=on_segment)
+            midi_path = convert_audio_to_midi(
+                audio_path,
+                progress_callback=on_segment,
+                stop_event=self.transcription_stop_event,
+            )
             self.enqueue_ui("progress", (100, "Done"))
             self.enqueue_ui("log", f"Done! Saved at:\n{midi_path}")
+        except InterruptedError:
+            self.enqueue_ui("log", "Transcription stopped.")
+            self.enqueue_ui("progress", (0, "Stopped"))
         except Exception as e:
             self.enqueue_ui("log", f"Error: {e}")
             self.enqueue_ui("progress", (0, "0%"))
             self.enqueue_ui("error", str(e))
         finally:
+            self.transcription_in_progress = False
+            self.transcription_stop_event.clear()
             self.enqueue_ui("controls", True)
 
 if __name__ == "__main__":
@@ -1325,6 +1906,15 @@ if __name__ == "__main__":
         lightcolor=THEME["success"],
         darkcolor=THEME["success"],
         thickness=14,
+    )
+    style.configure(
+        "Modern.Small.Horizontal.TProgressbar",
+        troughcolor=THEME["surface_alt"],
+        bordercolor=THEME["border"],
+        background=THEME["accent"],
+        lightcolor=THEME["accent"],
+        darkcolor=THEME["accent"],
+        thickness=8,
     )
     style.layout("Modern.Horizontal.TProgressbar",
         [('Horizontal.Progressbar.trough',

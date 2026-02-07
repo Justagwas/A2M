@@ -31,7 +31,7 @@ def note_detection_with_onset_offset_regress(frame_output, onset_output,
     for i in range(onset_output.shape[0]):
         if onset_output[i] == 1:
             """Onset detected"""
-            if bgn:
+            if bgn is not None:
                 """Consecutive onsets. E.g., pedal is not released, but two 
                 consecutive notes being played."""
                 fin = max(i - 1, 0)
@@ -40,7 +40,7 @@ def note_detection_with_onset_offset_regress(frame_output, onset_output,
                 frame_disappear, offset_occur = None, None
             bgn = i
 
-        if bgn and i > bgn:
+        if bgn is not None and i > bgn:
             """If onset found, then search offset"""
             if frame_output[i] <= frame_threshold and not frame_disappear:
                 """Frame disappear detected"""
@@ -61,7 +61,7 @@ def note_detection_with_onset_offset_regress(frame_output, onset_output,
                     offset_shift_output[fin], velocity_output[bgn]])
                 bgn, frame_disappear, offset_occur = None, None, None
 
-            if bgn and (i - bgn >= 600 or i == onset_output.shape[0] - 1):
+            if bgn is not None and (i - bgn >= 600 or i == onset_output.shape[0] - 1):
                 """Offset not detected"""
                 fin = i
                 output_tuples.append([bgn, fin, onset_shift_output[bgn], 
@@ -98,12 +98,12 @@ def pedal_detection_with_onset_offset_regress(frame_output, offset_output,
     for i in range(1, frame_output.shape[0]):
         if frame_output[i] >= frame_threshold and frame_output[i] > frame_output[i - 1]:
             """Pedal onset detected"""
-            if bgn:
+            if bgn is not None:
                 pass
             else:
                 bgn = i
 
-        if bgn and i > bgn:
+        if bgn is not None and i > bgn:
             """If onset found, then search offset"""
             if frame_output[i] <= frame_threshold and not frame_disappear:
                 """Frame disappear detected"""

@@ -1,8 +1,5 @@
 import os
 import numpy as np
-import time
-import librosa
-from pathlib import Path
 
 try:
     import torch
@@ -11,14 +8,14 @@ except Exception:
 
 from .utilities import (RegressionPostProcessor, write_events_to_midi)
 from . import config
+from .model_paths import MODEL_MIN_BYTES, MODEL_DOWNLOAD_URL, resolve_checkpoint_path
 
 if torch is not None:
     from .models import Regress_onset_offset_frame_velocity_CRNN, Note_pedal
-    from .pytorch_utils import move_data_to_device, forward
+    from .pytorch_utils import forward
 else:
     Regress_onset_offset_frame_velocity_CRNN = None
     Note_pedal = None
-    move_data_to_device = None
     forward = None
 
 
@@ -52,14 +49,13 @@ class PianoTranscription(object):
                     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         if device is None:
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        if not checkpoint_path: 
-            checkpoint_path='{}/piano_transcription_inference_data/note_F1=0.9677_pedal_F1=0.9186.pth'.format(str(Path.home()))
+        checkpoint_path = resolve_checkpoint_path(checkpoint_path)
         print('Checkpoint path: {}'.format(checkpoint_path))
 
-        if not os.path.exists(checkpoint_path) or os.path.getsize(checkpoint_path) < 1.6e8:
+        if not os.path.exists(checkpoint_path) or os.path.getsize(checkpoint_path) < MODEL_MIN_BYTES:
             raise RuntimeError(
                 "Model checkpoint not found or incomplete. "
-                "Download it via the A2M app and retry."
+                f"Download it via the A2M app ({MODEL_DOWNLOAD_URL}) and retry."
             )
 
         print('Using {} for inference.'.format(device))
@@ -98,7 +94,7 @@ class PianoTranscription(object):
         else:
             print('Using CPU.')
 
-    def transcribe(self, audio, midi_path):
+    def transcribe(self, audio, midi_path, stop_event=None):
         """Transcribe an audio recording.
 
         Args:
@@ -109,6 +105,8 @@ class PianoTranscription(object):
           transcribed_dict, dict: {'output_dict':, ..., 'est_note_events': ...}
 
         """
+        if stop_event is not None and stop_event.is_set():
+            raise InterruptedError("Transcription stopped by user.")
         audio = audio[None, :]  # (1, audio_samples)
 
         # Pad audio to be evenly divided by segment_samples
@@ -121,13 +119,19 @@ class PianoTranscription(object):
         # Enframe to segments
         segments = self.enframe(audio, self.segment_samples)
         """(N, segment_samples)"""
+        if stop_event is not None and stop_event.is_set():
+            raise InterruptedError("Transcription stopped by user.")
 
         # Forward
-        output_dict = forward(self.model, segments, batch_size=self.batch_size)
+        output_dict = forward(self.model, segments, batch_size=self.batch_size, stop_event=stop_event)
         """{'reg_onset_output': (N, segment_frames, classes_num), ...}"""
+        if stop_event is not None and stop_event.is_set():
+            raise InterruptedError("Transcription stopped by user.")
 
         # Deframe to original length
         for key in output_dict.keys():
+            if stop_event is not None and stop_event.is_set():
+                raise InterruptedError("Transcription stopped by user.")
             output_dict[key] = self.deframe(output_dict[key])[0 : audio_len]
         """output_dict: {
           'reg_onset_output': (N, segment_frames, classes_num), 
@@ -145,9 +149,13 @@ class PianoTranscription(object):
         # Post process output_dict to MIDI events
         (est_note_events, est_pedal_events) = \
             post_processor.output_dict_to_midi_events(output_dict)
+        if stop_event is not None and stop_event.is_set():
+            raise InterruptedError("Transcription stopped by user.")
 
         # Write MIDI events to file
         if midi_path:
+            if stop_event is not None and stop_event.is_set():
+                raise InterruptedError("Transcription stopped by user.")
             write_events_to_midi(start_time=0, note_events=est_note_events, 
                 pedal_events=est_pedal_events, midi_path=midi_path)
             print('Write out to {}'.format(midi_path))
