@@ -1,15 +1,23 @@
+from __future__ import annotations
+
 import sys
 from pathlib import Path
 
-MODEL_URL = "https://downloads.justagwas.com/a2m/PianoModel.pth"
+try:
+    from a2m.core import model_service as _core_model_service
+    from a2m.core.constants import MODEL_FILENAME, MODEL_MIN_BYTES, MODEL_URL
+except Exception:
+    MODEL_URL = 'https://downloads.justagwas.com/a2m/PianoModel.onnx'
+    MODEL_FILENAME = 'PianoModel.onnx'
+    MODEL_MIN_BYTES = 20000000
+    _core_model_service = None
+
 MODEL_DOWNLOAD_URL = MODEL_URL
-MODEL_FILENAME = "PianoModel.pth"
-MODEL_MIN_BYTES = 160_000_000
-MODEL_DIR = Path.home() / "piano_transcription_inference_data"
+MODEL_DIR = _core_model_service.MODEL_DIR if _core_model_service is not None else (Path.home() / 'AppData' / 'Local' / 'A2M' / 'models')
 
 
 def get_app_dir(app_file=None):
-    if getattr(sys, "frozen", False):
+    if getattr(sys, 'frozen', False):
         return Path(sys.executable).resolve().parent
     if app_file:
         return Path(app_file).resolve().parent
@@ -25,6 +33,8 @@ def find_existing_model(base_dir):
 
 
 def get_model_candidate_dirs(app_file=None):
+    if _core_model_service is not None:
+        return [Path(path) for path in _core_model_service.get_model_candidate_dirs()]
     app_dir = get_app_dir(app_file=app_file)
     dirs = [app_dir]
     if app_dir.resolve() != MODEL_DIR.resolve():
@@ -33,6 +43,10 @@ def get_model_candidate_dirs(app_file=None):
 
 
 def get_existing_model_path(app_file=None):
+    if _core_model_service is not None:
+        existing = _core_model_service.get_existing_model_path()
+        if existing:
+            return Path(existing)
     for base_dir in get_model_candidate_dirs(app_file=app_file):
         existing = find_existing_model(base_dir)
         if existing:
@@ -40,9 +54,9 @@ def get_existing_model_path(app_file=None):
     return None
 
 
-def resolve_checkpoint_path(checkpoint_path=None, app_file=None):
-    if checkpoint_path:
-        return str(checkpoint_path)
+def resolve_model_path(model_path=None, app_file=None):
+    if model_path:
+        return str(model_path)
     existing = get_existing_model_path(app_file=app_file)
     if existing:
         return str(existing)

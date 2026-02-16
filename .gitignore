@@ -370,3 +370,32 @@ A2M/version.txt
 /A2M/dist
 A2M/A2M.spec
 /A2M/build
+
+# A2M runtime/generated artifacts
+A2M/a2m_config.json
+A2M/PianoModel.pth
+A2M/PianoModel.onnx
+
+# A2M local tooling artifacts
+/tools
+
+# Root-level local artifacts from packaging
+/dist/
+/build/
+/*.spec
+/a2m_config.json
+/PianoModel.pth
+/PianoModel.onnx
+
+# Python local env/cache
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local tests
+/tests/
+/A2M/tests
+*.spec
+/A2M/analysis

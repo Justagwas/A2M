@@ -1,130 +1,148 @@
+# A2M
+
+<div align="center">
+
+[![Code: GitHub](https://img.shields.io/badge/Code-GitHub-111827.svg?style=flat&logo=github&logoColor=white)](https://github.com/Justagwas/A2M)
+[![Website](https://img.shields.io/badge/Website-A2M-0ea5e9.svg?style=flat&logo=google-chrome&logoColor=white)](https://Justagwas.com/projects/a2m)
+[![Mirror: SourceForge](https://img.shields.io/badge/Mirror-SourceForge-ff6600.svg?style=flat&logo=sourceforge&logoColor=white)](https://sourceforge.net/projects/a2m/)
+
+</div>
+
 <p align="center">
   <img
-    width="192"
-    height="192"
+    width="128"
+    height="128"
     alt="A2M Logo"
-    src="https://github.com/user-attachments/assets/00308900-94b8-48dc-a38a-12c058195bc1"
+    src="https://github.com/user-attachments/assets/298427b1-d609-4e22-84c4-2c28bd980951"
   />
 </p>
 
-<h1 align="center">A2M</h1>
+<div align="center">
 
-<h3 align="center">Desktop audio-to-MIDI transcription for piano-focused recordings</h3>
+[![Download (Windows)](https://img.shields.io/badge/Download-Windows%20(A2MSetup.exe)-2563eb.svg?style=flat&logo=windows&logoColor=white)](https://github.com/Justagwas/A2M/releases/latest/download/A2MSetup.exe)
 
-<p align="center">
-  Convert local audio files into MIDI files in a few clicks<br/>
-  Runs locally on your machine with no cloud upload
-</p>
+</div>
 
-<p align="center">
-  <a href="https://github.com/Justagwas/A2M/releases/latest/download/A2MSetup.exe">
-    <img
-      src="https://img.shields.io/badge/Download%20for%20Windows-2563eb?style=for-the-badge&logo=windows&logoColor=white"
-      alt="Download A2M for Windows"
-    />
-  </a>
-</p>
+<p align="center"><b>Desktop audio-to-MIDI conversion tailored for piano recordings</b></p>
 
-<p align="center">
-  <a href="https://justagwas.com/projects/a2m">Website</a>
-  &nbsp;•&nbsp;
-  <a href="https://github.com/Justagwas/A2M/releases">Releases</a>
-  &nbsp;•&nbsp;
-  <a href="https://github.com/Justagwas/A2M/issues">Issues</a>
-  &nbsp;•&nbsp;
-  <a href="https://github.com/Justagwas/A2M/wiki">Documentation</a>
-  &nbsp;•&nbsp;
-  <a href="https://github.com/Justagwas/A2M/blob/main/LICENSE">License</a>
-</p>
+<p align="center">Runs entirely offline on Windows, CPU-first by design, with optional CUDA or DirectML acceleration</p>
+
+
+<div align="center">
+
+[![Version](https://img.shields.io/github/v/tag/Justagwas/A2M.svg?label=Version)](
+https://github.com/Justagwas/A2M/tags)
+[![Last Commit](https://img.shields.io/github/last-commit/Justagwas/A2M/main.svg?style=flat&cacheSeconds=3600)](
+https://github.com/Justagwas/A2M/commits/main)
+[![Stars](https://img.shields.io/github/stars/Justagwas/A2M.svg?style=flat&cacheSeconds=3600)](
+https://github.com/Justagwas/A2M/stargazers)
+[![Open Issues](https://img.shields.io/github/issues/Justagwas/A2M.svg)](
+https://github.com/Justagwas/A2M/issues)
+[![License](https://img.shields.io/github/license/Justagwas/A2M.svg)](
+https://github.com/Justagwas/A2M/blob/main/LICENSE)
+
+</div>
 
 ## Overview
 
-A2M is a Windows desktop app that transcribes local audio files into `.mid` files.
+A2M (Audio to MIDI) is a Windows desktop app that converts local, piano-focused audio into `.mid` files.
 
-- Input: local audio file (`.mp3`, `.wav`, `.flac`, `.ogg`, `.m4a`, `.aac`, `.wma`, `.aiff`, `.aif`)
-- Output: MIDI file in `Downloads/A2M`
-- Model: `PianoModel.pth` (downloaded once, about 165 MB)
-
-The app is built with the bundled `piano_transcription_inference` codebase:
-https://github.com/qiuqiangkong/piano_transcription_inference
+The app uses ONNX Runtime, supports CPU by default, and can switch to optional GPU acceleration through runtime packs (CUDA or DirectML). It includes two transcription engines in settings: `Legacy v1.0.0` and `Modern v2.0.0` (Legacy default).
 
 ## Basic usage
 
-1. Launch A2M.
-2. Click **Choose Audio** and pick a local file.
-3. If prompted, download the transcription model.
-4. Click **Convert to MIDI**.
-5. Open `Downloads/A2M` to access the exported `.mid` file.
+1. Download and install from the [latest release](https://github.com/Justagwas/A2M/releases/latest/download/A2MSetup.exe).
+2. If prompted, allow the model download.
+3. Click **Choose audio** and select a local file.
+4. Select CPU or GPU mode in settings.
+5. Click **Convert to MIDI**.
+6. Open the output folder from the footer (**Open downloads folder**) or from your configured save path.
 
 ## Features
 
-- Local transcription workflow (no account and no cloud upload for audio files)
-- First-run guided model download with progress + fallback install path
-- Stop button for in-progress transcription
-- In-app progress bar and status console
-- Automatic/manual update checks against the project update manifest
-- Dark/light theme toggle and UI size scaling
-- Safe output naming (invalid characters removed and duplicate filenames auto-suffixed)
+- Local audio-to-MIDI transcription workflow.
+- ONNX Runtime inference pipeline.
+- CPU-first behavior with optional GPU runtime packs.
+- GPU provider preference options: `Auto`, `CUDA`, `DirectML`.
+- In-app runtime-pack installation for GPU dependencies.
+- Legacy and Modern transcription engines.
+- Modern tuning options for adaptive thresholds, input normalization/denoise, overlap stitching, and auto calibration.
+- Output location controls, UI scale controls, and update checks.
+- Stop/cancel handling for model download, runtime-pack download, cuDNN install, and conversion.
 
-## Model download and storage
+## Feature sections
 
-- Model URL is:
-  `https://downloads.justagwas.com/a2m/PianoModel.pth`
-- A2M first tries to store `PianoModel.pth` next to the app.
-- If the app directory is not writable, it falls back to:
-  `%USERPROFILE%\piano_transcription_inference_data`
+### Runtime and Acceleration
 
-## Runtime and conversion behavior
+- A2M runs on CPU by default.
+- Optional GPU runtime packs are installed per-user under:
+  - `%LOCALAPPDATA%\A2M\runtime_packs\cuda`
+  - `%LOCALAPPDATA%\A2M\runtime_packs\dml`
+- Runtime-pack endpoints are defined in [`A2M/a2m/core/app_config.json`](https://github.com/Justagwas/A2M/blob/main/A2M/a2m/core/app_config.json).
 
-- PyTorch must be available at runtime for conversion to run.
-- Current runtime behavior is CPU-only; GPU mode is shown in UI but intentionally disabled in code.
-- MIDI post-processing removes very short/low-velocity notes and overlapping duplicates per pitch.
+### Transcription Engines
+
+- `Legacy v1.0.0` is the default engine.
+- `Modern v2.0.0` exposes additional behavior controls and diagnostics.
+- Modern controls are shown contextually in settings based on selected engine/calibration mode.
 
 ## Preview
 
-- Project page with full preview gallery: [justagwas.com/projects/a2m](https://www.justagwas.com/projects/a2m)
-- OpenPiano Installer Download link: [justagwas.com/projects/a2m/download](https://www.justagwas.com/projects/a2m/download)
+- Project page: <https://www.justagwas.com/projects/a2m>
+- Download page: <https://www.justagwas.com/projects/a2m/download>
+- Releases: <https://github.com/Justagwas/a2m/releases>
 
-<details><summary>For Developers</summary>
+<details>
+<summary>For Developers</summary>
 
 ### Requirements
 
-- Python 3.10+ (Windows recommended for full parity with release behavior)
-- Dependencies from:
-  https://github.com/Justagwas/A2M/blob/main/A2M/requirements.txt
+- Windows (primary runtime target).
+- Python 3.11+.
+- Dependencies in [`A2M/requirements.txt`](https://github.com/Justagwas/A2M/blob/main/A2M/requirements.txt).
 
 ### Running From Source
+
 ```powershell
 cd A2M
 py -m pip install -r requirements.txt
 py A2M.py
 ```
 
+### Configuration Files
+
+- App metadata and release/update/runtime URLs: [`A2M/a2m/core/app_config.json`](https://github.com/Justagwas/A2M/blob/main/A2M/a2m/core/app_config.json)
+- App constants and defaults: [`A2M/a2m/core/constants.py`](https://github.com/Justagwas/A2M/blob/main/A2M/a2m/core/constants.py)
+- Runtime settings serialization and normalization: [`A2M/a2m/core/config_service.py`](https://github.com/Justagwas/A2M/blob/main/A2M/a2m/core/config_service.py)
+- Runtime/path resolution helpers: [`A2M/a2m/core/paths.py`](https://github.com/Justagwas/A2M/blob/main/A2M/a2m/core/paths.py)
+- Model download/storage logic: [`A2M/a2m/core/model_service.py`](https://github.com/Justagwas/A2M/blob/main/A2M/a2m/core/model_service.py)
+- GPU runtime-pack management: [`A2M/a2m/core/runtime_pack_service.py`](https://github.com/Justagwas/A2M/blob/main/A2M/a2m/core/runtime_pack_service.py)
+
 </details>
 
 ## Security and OS Warnings
 
-- A2M is open source and intended for local desktop use.
-- Windows SmartScreen may display "Protected your PC" for newer/unsigned binaries.
-- Only run installers downloaded from official A2M release links.
-
-Note: audio conversion runs locally, but A2M uses network access for model download and update checks.
+- Windows SmartScreen may show warnings for newer or unsigned binaries.
+- Download from official links only:
+  - <https://github.com/Justagwas/a2m/releases>
+  - <https://www.justagwas.com/projects/a2m>
+  - <https://sourceforge.net/projects/a2m/>
+- Security policy and private vulnerability reporting: [`.github/SECURITY.md`](https://github.com/Justagwas/A2M/blob/main/.github/SECURITY.md)
 
 ## Contributing
 
-- Contribution guide:
-  https://github.com/Justagwas/A2M/blob/main/.github/CONTRIBUTING.md
-- Open issues:
-  https://github.com/Justagwas/A2M/issues
-- Issue templates:
-  https://github.com/Justagwas/A2M/tree/main/.github/ISSUE_TEMPLATE
-- Code of Conduct:
-  https://github.com/Justagwas/A2M/blob/main/.github/CODE_OF_CONDUCT.md
+Contributions are welcome.
+
+- Start with [`.github/CONTRIBUTING.md`](https://github.com/Justagwas/A2M/blob/main/.github/CONTRIBUTING.md)
+- Follow [`.github/CODE_OF_CONDUCT.md`](https://github.com/Justagwas/A2M/blob/main/.github/CODE_OF_CONDUCT.md)
+- Use [Issues](https://github.com/Justagwas/A2M/issues) for bugs, requests, and questions
+- Wiki: <https://github.com/Justagwas/A2M/wiki>
 
 ## License
 
-Licensed under Apache-2.0:
-https://github.com/Justagwas/A2M/blob/main/LICENSE
+Licensed under the Apache License 2.0.
+
+See [`LICENSE`](https://github.com/Justagwas/A2M/blob/main/LICENSE).
 
 ## Contact
 
