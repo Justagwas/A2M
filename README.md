@@ -1,4 +1,4 @@
-# A2M
+# A2M - Audio to MIDI
 
 <div align="center">
 
