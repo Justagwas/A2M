@@ -13,7 +13,7 @@
     width="128"
     height="128"
     alt="A2M Logo"
-    src="https://github.com/user-attachments/assets/298427b1-d609-4e22-84c4-2c28bd980951"
+    src="https://github.com/user-attachments/assets/64a4aa9f-e130-4eb7-9f29-77fc449567f6"
   />
 </p>
 
