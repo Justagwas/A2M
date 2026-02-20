@@ -5,7 +5,7 @@ from pathlib import Path
 
 try:
     from a2m.core import model_service as _core_model_service
-    from a2m.core.constants import MODEL_FILENAME, MODEL_MIN_BYTES, MODEL_URL
+    from a2m.core.config import MODEL_FILENAME, MODEL_MIN_BYTES, MODEL_URL
 except Exception:
     MODEL_URL = 'https://downloads.justagwas.com/a2m/PianoModel.onnx'
     MODEL_FILENAME = 'PianoModel.onnx'
@@ -61,3 +61,4 @@ def resolve_model_path(model_path=None, app_file=None):
     if existing:
         return str(existing)
     return str(get_app_dir(app_file=app_file) / MODEL_FILENAME)
+

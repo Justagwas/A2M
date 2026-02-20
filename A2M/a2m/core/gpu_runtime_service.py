@@ -3,7 +3,6 @@ import ctypes
 import json
 import os
 import subprocess
-import sys
 from pathlib import Path
 from .runtime_artifacts import provider_artifact_exists as _shared_provider_artifact_exists
 from .runtime_artifacts import pybind_state_exists as _shared_pybind_state_exists

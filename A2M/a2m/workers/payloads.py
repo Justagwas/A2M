@@ -26,10 +26,3 @@ class ConversionPayload:
     midi_path: str
 
 
-@dataclass(slots=True)
-class UpdateCheckPayload:
-    manual: bool
-    latest_version: str
-    latest_display: str
-    download_url: str
-    update_available: bool

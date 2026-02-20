@@ -9,7 +9,7 @@ from . import gpu_runtime_service, runtime_service
 from .archive_service import assert_not_stopped as _assert_not_stopped
 from .archive_service import remove_tree as _remove_tree
 from .archive_service import safe_extract_zip as _safe_extract_zip
-from .constants import ONNX_CUDA_RUNTIME_PACK_URL, ONNX_DML_RUNTIME_PACK_URL
+from .config import ONNX_CUDA_RUNTIME_PACK_URL, ONNX_DML_RUNTIME_PACK_URL
 from .model_service import download_file
 from .paths import localappdata_dir
 from .runtime_artifacts import runtime_root_from_path as _shared_runtime_root_from_path
@@ -188,3 +188,4 @@ def download_and_install_pack(provider: str, *, progress_callback=None, stop_eve
                 pass
         if stage_dir.exists():
             _remove_tree(stage_dir)
+

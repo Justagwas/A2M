@@ -5,7 +5,7 @@ from pathlib import Path
 from PySide6.QtCore import QEvent, QEasingCurve, QPropertyAnimation, QPointF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFontMetrics, QGuiApplication, QIcon, QPainter, QPalette, QPen, QPixmap, QTextCursor
 from PySide6.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QMainWindow, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QSlider, QVBoxLayout, QWidget
-from a2m.core.constants import APP_NAME, APP_VERSION, UI_SCALE_PERCENT_MAX, UI_SCALE_PERCENT_MIN
+from a2m.core.config import APP_NAME, APP_VERSION, UI_SCALE_PERCENT_MAX, UI_SCALE_PERCENT_MIN
 from .interaction import is_pointer_control, sync_pointer_cursor
 from .settings_panel import SettingsPanel
 from .theme import DARK_THEME, ThemePalette, build_stylesheet
@@ -50,6 +50,7 @@ class MainWindow(QMainWindow):
         self._file_path_placeholder = 'No file path selected'
         self._model_status_full = 'Transcription model: checking...'
         self._settings_visible = False
+        self._window_pinned = False
         self._render_scale = 1.0
         self._base_width = 608
         self._base_height = 400
@@ -58,9 +59,6 @@ class MainWindow(QMainWindow):
         self._settings_target_width = self._base_settings_width
         self._settings_animation_expected_end_width: int | None = None
         self.setWindowTitle(APP_NAME)
-        self.setWindowFlag(Qt.WindowMaximizeButtonHint, False)
-        if hasattr(Qt, 'MSWindowsFixedSizeDialogHint'):
-            self.setWindowFlag(Qt.MSWindowsFixedSizeDialogHint, True)
         if icon_path and icon_path.exists():
             self.setWindowIcon(QIcon(str(icon_path)))
         self._build_ui()
@@ -149,8 +147,8 @@ class MainWindow(QMainWindow):
         self.file_choose_btn = QPushButton('Choose Audio', file_card)
         self.file_choose_btn.setObjectName('actionButton')
         self.file_choose_btn.setMinimumWidth(120)
-        self.file_choose_btn.setMinimumHeight(60)
-        self.file_choose_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+        self.file_choose_btn.setMinimumHeight(68)
+        self.file_choose_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.file_choose_btn.clicked.connect(self.chooseFileRequested.emit)
         file_layout.addWidget(self.file_choose_btn, 0)
         main_layout.addWidget(file_card)
@@ -184,8 +182,8 @@ class MainWindow(QMainWindow):
         self.console.setPlaceholderText('Console output')
         self._apply_console_placeholder_color()
         self.console.setMinimumHeight(86)
-        self.console.setMaximumHeight(112)
-        self.console.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.console.setMaximumHeight(16777215)
+        self.console.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         main_layout.addWidget(self.console, 0)
 
     def _build_settings_panel(self, root: QWidget, content_row: QHBoxLayout) -> None:
@@ -222,7 +220,16 @@ class MainWindow(QMainWindow):
         self.theme_toggle_btn.setFlat(True)
         self.theme_toggle_btn.setIconSize(QSize(20, 20))
         self.theme_toggle_btn.clicked.connect(self._on_theme_toggle_clicked)
+
+        self.pin_toggle_btn = QPushButton('', footer)
+        self.pin_toggle_btn.setObjectName('footerIcon')
+        self.pin_toggle_btn.setFlat(True)
+        self.pin_toggle_btn.setCheckable(True)
+        self.pin_toggle_btn.setChecked(False)
+        self.pin_toggle_btn.setIconSize(QSize(20, 20))
+        self.pin_toggle_btn.toggled.connect(self._on_pin_toggled)
         footer_layout.addWidget(self.theme_toggle_btn, 0, Qt.AlignLeft)
+        footer_layout.addWidget(self.pin_toggle_btn, 0, Qt.AlignLeft)
         self.settings_toggle_btn = QPushButton('Show settings', footer)
         self.settings_toggle_btn.setObjectName('footerLink')
         self.settings_toggle_btn.setFlat(True)
@@ -276,6 +283,7 @@ class MainWindow(QMainWindow):
             self.convert_btn,
             self.stop_btn,
             self.theme_toggle_btn,
+            self.pin_toggle_btn,
             self.settings_toggle_btn,
             self.downloads_btn,
             self.official_btn,
@@ -382,6 +390,49 @@ class MainWindow(QMainWindow):
         painter.end()
         return QIcon(icon)
 
+    def _build_pin_icon(self, pinned: bool) -> QIcon:
+        size = max(14, int(self.pin_toggle_btn.iconSize().width()))
+        screen = QGuiApplication.primaryScreen()
+        dpr = float(screen.devicePixelRatio()) if screen is not None else 1.0
+        px = int(round(size * dpr))
+        icon = QPixmap(px, px)
+        icon.setDevicePixelRatio(dpr)
+        icon.fill(Qt.transparent)
+        color = QColor(self.theme.accent if pinned else self.theme.text_primary)
+        painter = QPainter(icon)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        pen = QPen(color, max(1.1, size * 0.10), Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+        center = QPointF(size * 0.5, size * 0.56)
+        if not pinned:
+            painter.translate(center)
+            painter.rotate(-28)
+            painter.translate(-center)
+        head_radius = size * 0.21
+        head_center = QPointF(center.x(), center.y() - size * 0.30)
+        painter.setBrush(color)
+        painter.drawEllipse(head_center, head_radius, head_radius)
+        painter.setBrush(Qt.NoBrush)
+        stem_top = QPointF(center.x(), head_center.y() + head_radius * 0.95)
+        stem_mid = QPointF(center.x(), center.y() + size * 0.12)
+        painter.drawLine(stem_top, stem_mid)
+        cross_y = head_center.y() + head_radius * 0.45
+        cross_half = size * 0.14
+        painter.drawLine(
+            QPointF(center.x() - cross_half, cross_y),
+            QPointF(center.x() + cross_half, cross_y),
+        )
+        needle_top = stem_mid
+        needle_bottom = QPointF(center.x(), center.y() + size * 0.40)
+        painter.drawLine(needle_top, needle_bottom)
+        painter.end()
+        return QIcon(icon)
+
+    def _refresh_pin_toggle_icon(self) -> None:
+        self.pin_toggle_btn.setIcon(self._build_pin_icon(self._window_pinned))
+        self._update_pin_tooltip(self._window_pinned)
+
     def _refresh_theme_toggle_icon(self) -> None:
         if self._theme_mode == 'dark':
             self.theme_toggle_btn.setIcon(self._build_theme_icon('moon'))
@@ -434,12 +485,15 @@ class MainWindow(QMainWindow):
         self._footer_layout.setContentsMargins(self._scaled(2, scale, 1), 0, self._scaled(2, scale, 1), 0)
         self._footer_layout.setSpacing(self._scaled(8, scale, 4))
         self.file_choose_btn.setMinimumWidth(self._scaled(120, scale, 96))
-        self.file_choose_btn.setMinimumHeight(self._scaled(60, scale, 46))
+        self.file_choose_btn.setFixedHeight(self._scaled(68, scale, 54))
         self.console.setMinimumHeight(self._scaled(86, scale, 68))
-        self.console.setMaximumHeight(self._scaled(112, scale, 88))
+        self.console.setMaximumHeight(16777215)
         self.progress_bar.setFixedHeight(self._scaled(26, scale, 18))
         icon_px = self._scaled(20, scale, 18)
         self.theme_toggle_btn.setIconSize(QSize(icon_px, icon_px))
+
+        self.pin_toggle_btn.setIconSize(QSize(icon_px, icon_px))
+        self._refresh_pin_toggle_icon()
         footer_pt = max(7.5, round(9.5 * scale, 1))
         self.version_label.setStyleSheet(f'color: {self.theme.text_secondary}; font: 650 {footer_pt:.1f}pt "Segoe UI";')
         self.settings_panel.setMinimumWidth(self._scaled(208, scale, 162))
@@ -489,6 +543,31 @@ class MainWindow(QMainWindow):
         next_mode = 'light' if self._theme_mode == 'dark' else 'dark'
         self.themeModeChanged.emit(next_mode)
 
+    def _on_pin_toggled(self, checked: bool) -> None:
+        self._apply_window_pin_state(bool(checked))
+
+    def _apply_window_pin_state(self, enabled: bool) -> None:
+        pinned = bool(enabled)
+        if getattr(self, "_window_pinned", False) == pinned:
+            self._refresh_pin_toggle_icon()
+            return
+        self._window_pinned = pinned
+        was_maximized = self.isMaximized()
+        was_fullscreen = self.isFullScreen()
+        self.setWindowFlag(Qt.WindowStaysOnTopHint, pinned)
+        self.show()
+        if was_fullscreen:
+            self.showFullScreen()
+        elif was_maximized:
+            self.showMaximized()
+        self._apply_windows_titlebar_theme()
+        self._refresh_pin_toggle_icon()
+
+    def _update_pin_tooltip(self, pinned: bool) -> None:
+        self.pin_toggle_btn.setToolTip(
+            'Disable always on top' if pinned else 'Keep window on top'
+        )
+
     def set_theme(self, theme: ThemePalette, theme_mode: str) -> None:
         self.theme = theme
         self.settings_panel.set_theme(theme)
@@ -520,13 +599,21 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(build_stylesheet(self.theme, self._render_scale))
         self._apply_scaled_metrics(self._render_scale)
         width, height = self._compute_dimensions(self._render_scale)
+        max_width = 16777215
+        max_height = 16777215
         if geometry is not None:
-            width = min(width, max(1, int(geometry.width() * 0.92)))
-            height = min(height, max(1, int(geometry.height() * 0.92)))
+            max_width = max(1, int(geometry.width() * 0.92))
+            max_height = max(1, int(geometry.height() * 0.92))
+            width = min(width, max_width)
+            height = min(height, max_height)
         width = max(1, width)
         height = max(1, height)
-        self.setFixedSize(width, height)
-        self.resize(width, height)
+        self.setMinimumSize(width, height)
+        self.setMaximumSize(16777215, 16777215)
+        target_width = min(max_width, max(width, self.width()))
+        target_height = min(max_height, max(height, self.height()))
+        if target_width != self.width() or target_height != self.height():
+            self.resize(target_width, target_height)
         self._settings_target_width = self._compute_settings_target_width(self._render_scale, self.width())
         self._settings_animation_expected_end_width = None
         if self._settings_visible:
@@ -539,6 +626,7 @@ class MainWindow(QMainWindow):
         self._theme_mode = 'light' if mode == 'light' else 'dark'
         self.theme_toggle_btn.setText('')
         self._refresh_theme_toggle_icon()
+        self._refresh_pin_toggle_icon()
         self._apply_windows_titlebar_theme()
 
     def _apply_windows_titlebar_theme(self) -> None:
@@ -562,6 +650,12 @@ class MainWindow(QMainWindow):
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
+        self._settings_target_width = self._compute_settings_target_width(self._render_scale, self.width())
+        if self._settings_visible:
+            if self._settings_animation_expected_end_width is not None:
+                self._settings_animation_expected_end_width = int(self._settings_target_width)
+            else:
+                self._set_settings_container_width(self._settings_target_width)
         self._refresh_file_labels()
 
     def _refresh_file_labels(self) -> None:
@@ -653,3 +747,4 @@ class MainWindow(QMainWindow):
 
     def is_settings_visible(self) -> bool:
         return self._settings_visible
+

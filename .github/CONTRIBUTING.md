@@ -1,4 +1,4 @@
-﻿# Contributing to A2M
+# Contributing to A2M
 
 Thanks for your interest in contributing to A2M.
 

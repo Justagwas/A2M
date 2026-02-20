@@ -3,7 +3,7 @@ import os
 import sys
 from collections.abc import Iterable
 from pathlib import Path
-from .constants import CONFIG_FILENAME
+from .config import CONFIG_FILENAME
 
 def app_root_dir() -> Path:
     return Path(__file__).resolve().parents[2]
@@ -80,3 +80,4 @@ def config_write_paths() -> list[Path]:
 
 def config_read_paths() -> list[Path]:
     return dedupe_paths((localappdata_config_path(), appdata_config_path(), script_config_path()), resolve_if_exists=False)
+

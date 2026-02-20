@@ -399,3 +399,5 @@ venv/
 /A2M/tests
 *.spec
 /A2M/analysis
+*.ps1
+*.cmd

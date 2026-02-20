@@ -3,7 +3,7 @@ import uuid
 from pathlib import Path
 from threading import Event
 from typing import Callable
-from .constants import DOWNLOAD_HEADER_PROFILES, DOWNLOAD_RETRIES_PER_HEADER, DOWNLOAD_RETRY_BACKOFF_SECONDS, DOWNLOAD_TIMEOUT_SECONDS, MODEL_FILENAME, MODEL_MIN_BYTES, MODEL_URL
+from .config import DOWNLOAD_HEADER_PROFILES, DOWNLOAD_RETRIES_PER_HEADER, DOWNLOAD_RETRY_BACKOFF_SECONDS, DOWNLOAD_TIMEOUT_SECONDS, MODEL_FILENAME, MODEL_MIN_BYTES, MODEL_URL
 from .http_service import download_file_with_retries
 from .paths import app_dir, dedupe_paths, localappdata_dir
 ProgressCallback = Callable[[float], None]
@@ -100,3 +100,4 @@ def get_model_install_hint() -> Path:
     if can_write_dir(primary):
         return primary
     return MODEL_DIR
+

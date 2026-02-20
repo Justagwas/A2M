@@ -10,7 +10,7 @@ from typing import Callable
 from .archive_service import assert_not_stopped as _assert_not_stopped
 from .archive_service import remove_tree as _remove_tree
 from .archive_service import safe_extract_zip as _safe_extract_zip
-from .constants import CUDNN_DOWNLOAD_URL
+from .config import CUDNN_DOWNLOAD_URL
 from .model_service import download_file
 from .paths import dedupe_paths, localappdata_dir, normalized_path_key
 
@@ -237,3 +237,4 @@ def install_cudnn_and_configure_path(*, progress_callback: ProgressCallback | No
     process_changed = add_bin_to_process_path(bin_dir)
     user_changed = add_bin_to_user_path(bin_dir)
     return (bin_dir, process_changed, user_changed)
+

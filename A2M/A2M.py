@@ -4,7 +4,7 @@ from __future__ import annotations
 import ctypes
 import os
 import sys
-from a2m.core.constants import APP_NAME, APP_SHORT_NAME
+from a2m.core.config import APP_NAME, APP_SHORT_NAME
 from a2m.core.gpu_helper import run_gpu_helper_cli
 
 MUTEX_NAME = 'A2MMutex'
@@ -155,3 +155,4 @@ def main() -> int:
 
 if __name__ == '__main__':
     raise SystemExit(main())
+

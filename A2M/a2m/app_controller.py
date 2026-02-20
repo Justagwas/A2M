@@ -7,14 +7,15 @@ import webbrowser
 from pathlib import Path
 from PySide6.QtCore import QByteArray, QEvent, QObject, QThread, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QPalette
-from PySide6.QtWidgets import QFileDialog, QMessageBox, QWidget
+from PySide6.QtWidgets import QCheckBox, QDialog, QFileDialog, QHBoxLayout, QLabel, QMessageBox, QProgressDialog, QPushButton, QVBoxLayout, QWidget
 from a2m.core import conversion_service, cuda_dependency_service, gpu_runtime_service, model_service, runtime_pack_service, runtime_service
 from a2m.core.config_service import AppConfig, default_config, load_config, normalize_conversion_method, save_config
-from a2m.core.constants import CUDNN_DOWNLOAD_URL, CUDA_DOWNLOAD_URL, OFFICIAL_PAGE_URL, SUPPORTED_AUDIO_FILTER, UPDATE_CHECK_TIMEOUT_SECONDS
-from a2m.core.constants import MODERN_FRAME_THRESHOLD_DEFAULT, MODERN_FRAME_THRESHOLD_MAX, MODERN_FRAME_THRESHOLD_MIN
-from a2m.core.constants import MODERN_OFFSET_THRESHOLD_DEFAULT, MODERN_OFFSET_THRESHOLD_MAX, MODERN_OFFSET_THRESHOLD_MIN
-from a2m.core.constants import MODERN_ONSET_THRESHOLD_DEFAULT, MODERN_ONSET_THRESHOLD_MAX, MODERN_ONSET_THRESHOLD_MIN
-from a2m.core.constants import MODERN_PEDAL_OFFSET_THRESHOLD_DEFAULT, MODERN_PEDAL_OFFSET_THRESHOLD_MAX, MODERN_PEDAL_OFFSET_THRESHOLD_MIN
+from a2m.core.config import CUDNN_DOWNLOAD_URL, CUDA_DOWNLOAD_URL, OFFICIAL_PAGE_URL, SUPPORTED_AUDIO_FILTER
+from a2m.core.config import UPDATE_CHECK_TIMEOUT_SECONDS
+from a2m.core.config import MODERN_FRAME_THRESHOLD_DEFAULT, MODERN_FRAME_THRESHOLD_MAX, MODERN_FRAME_THRESHOLD_MIN
+from a2m.core.config import MODERN_OFFSET_THRESHOLD_DEFAULT, MODERN_OFFSET_THRESHOLD_MAX, MODERN_OFFSET_THRESHOLD_MIN
+from a2m.core.config import MODERN_ONSET_THRESHOLD_DEFAULT, MODERN_ONSET_THRESHOLD_MAX, MODERN_ONSET_THRESHOLD_MIN
+from a2m.core.config import MODERN_PEDAL_OFFSET_THRESHOLD_DEFAULT, MODERN_PEDAL_OFFSET_THRESHOLD_MAX, MODERN_PEDAL_OFFSET_THRESHOLD_MIN
 from a2m.core.gpu_helper import REASON_PROVIDER_LOAD_FAILED, REASON_PROVIDER_NOT_EXPOSED, REASON_SESSION_CREATION_FAILED
 from a2m.core.gpu_runtime_manager import GpuRuntimeManager, RuntimeDecision
 from a2m.core.messages import RUNTIME_INFO_CHECKING, RUNTIME_WARNING_MISSING
@@ -31,6 +32,7 @@ from a2m.workers.model_download_worker import ModelDownloadWorker
 from a2m.workers.payloads import CudnnInstallPayload, RuntimePackDownloadPayload
 from a2m.workers.runtime_pack_download_worker import RuntimePackDownloadWorker
 from a2m.workers.update_check_worker import UpdateCheckWorker
+from a2m.workers.update_install_worker import UpdateInstallWorker
 
 class AppController(QObject):
     runtimeProbeReady = Signal(int, bool, bool, bool)
@@ -68,6 +70,7 @@ class AppController(QObject):
         self.close_after_model_download = False
         self.close_after_runtime_pack_download = False
         self.close_after_cudnn_install = False
+        self.close_after_update_operation = False
         self._restart_after_gpu_setup = False
         self._restart_prompt_pending = False
         self._runtime_checking = True
@@ -93,6 +96,11 @@ class AppController(QObject):
         self._cudnn_worker: CudnnInstallWorker | None = None
         self._update_thread: QThread | None = None
         self._update_worker: UpdateCheckWorker | None = None
+        self._update_check_manual = False
+        self._update_install_thread: QThread | None = None
+        self._update_install_worker: UpdateInstallWorker | None = None
+        self._update_install_fallback_url = ''
+        self._update_progress_dialog: QProgressDialog | None = None
         self.window = MainWindow(theme=get_theme(self.config.theme_mode), icon_path=icon_path(), theme_mode=self.config.theme_mode, ui_scale_percent=self.config.ui_scale_percent)
         self.window.set_close_handler(self._handle_close_request)
         self._restore_window_geometry()
@@ -564,7 +572,7 @@ class AppController(QObject):
 
     def _apply_dialog_theme(self, widget: QWidget) -> None:
         theme = self.window.theme
-        style = f'QDialog, QMessageBox {{ background: {theme.panel_bg}; color: {theme.text_primary}; }}QLabel {{ color: {theme.text_primary}; background: transparent; }}QPushButton {{ background: {theme.panel_bg}; color: {theme.text_primary}; border: 1px solid {theme.border}; border-radius: 6px; padding: 5px 10px; font: 600 9.5pt "Segoe UI"; min-height: 24px; }}QPushButton:hover {{ background: {theme.accent}; color: {theme.text_primary}; }}QPushButton:disabled {{ background: {theme.disabled_bg}; color: {theme.disabled_fg}; border-color: {theme.border}; }}QLineEdit, QListView, QTreeView {{ background: {theme.app_bg}; color: {theme.text_primary}; border: 1px solid {theme.border}; }}'
+        style = f'QDialog, QMessageBox {{ background: {theme.panel_bg}; color: {theme.text_primary}; }}QLabel {{ color: {theme.text_primary}; background: transparent; }}QCheckBox {{ color: {theme.text_primary}; background: transparent; }}QCheckBox:disabled {{ color: {theme.disabled_fg}; }}QPushButton {{ background: {theme.panel_bg}; color: {theme.text_primary}; border: 1px solid {theme.border}; border-radius: 6px; padding: 5px 10px; font: 600 9.5pt "Segoe UI"; min-height: 24px; }}QPushButton:hover {{ background: {theme.accent}; color: {theme.text_primary}; }}QPushButton:disabled {{ background: {theme.disabled_bg}; color: {theme.disabled_fg}; border-color: {theme.border}; }}QLineEdit, QListView, QTreeView {{ background: {theme.app_bg}; color: {theme.text_primary}; border: 1px solid {theme.border}; }}'
         widget.setStyleSheet(style)
         palette = widget.palette()
         palette.setColor(QPalette.Window, QColor(theme.panel_bg))
@@ -576,6 +584,10 @@ class AppController(QObject):
         palette.setColor(QPalette.ButtonText, QColor(theme.text_primary))
         palette.setColor(QPalette.ToolTipBase, QColor(theme.panel_bg))
         palette.setColor(QPalette.ToolTipText, QColor(theme.text_primary))
+        palette.setColor(QPalette.Disabled, QPalette.WindowText, QColor(theme.disabled_fg))
+        palette.setColor(QPalette.Disabled, QPalette.Text, QColor(theme.disabled_fg))
+        palette.setColor(QPalette.Disabled, QPalette.ButtonText, QColor(theme.disabled_fg))
+        palette.setColor(QPalette.Disabled, QPalette.Button, QColor(theme.disabled_bg))
         widget.setPalette(palette)
         widget.setAutoFillBackground(True)
         self._apply_windows_titlebar_theme(widget)
@@ -627,6 +639,137 @@ class AppController(QObject):
     def _ask_question(self, title: str, text: str, *, default_button: QMessageBox.StandardButton=QMessageBox.NoButton) -> QMessageBox.StandardButton:
         return self._dialogs.ask_question(title, text, default_button=default_button)
 
+    def _ask_update_install_preference(
+        self,
+        *,
+        latest_version: str,
+        details_text: str = '',
+        install_supported: bool = True,
+    ) -> tuple[bool, bool]:
+        dialog = QDialog(self.window)
+        dialog.setModal(True)
+        dialog.setWindowTitle('Update available')
+        icon_obj = self.window.windowIcon()
+        if not icon_obj.isNull():
+            dialog.setWindowIcon(icon_obj)
+        self._apply_dialog_theme(dialog)
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(10)
+
+        title = QLabel(f'Version {str(latest_version or "latest")} is available.', dialog)
+        title.setStyleSheet('font: 700 9pt "Segoe UI";')
+        layout.addWidget(title)
+
+        auto_install_checkbox = QCheckBox('Install update automatically', dialog)
+        auto_install_checkbox.setChecked(bool(install_supported))
+        auto_install_checkbox.setEnabled(bool(install_supported))
+        layout.addWidget(auto_install_checkbox)
+
+        mode_hint = QLabel('', dialog)
+        mode_hint.setWordWrap(True)
+        mode_hint.setStyleSheet('font: 600 8pt "Segoe UI";')
+
+        def _refresh_hint() -> None:
+            if auto_install_checkbox.isEnabled() and auto_install_checkbox.isChecked():
+                mode_hint.setText('A2M will download, verify, install the update, and relaunch automatically.')
+            elif auto_install_checkbox.isEnabled():
+                mode_hint.setText('A2M will open the download page so you can install the update manually.')
+            else:
+                mode_hint.setText('Automatic install is unavailable here. A2M will open the download page.')
+
+        auto_install_checkbox.toggled.connect(lambda _checked=False: _refresh_hint())
+        _refresh_hint()
+        layout.addWidget(mode_hint)
+
+        extra = str(details_text or '').strip()
+        if extra:
+            details_label = QLabel(extra, dialog)
+            details_label.setWordWrap(True)
+            details_label.setStyleSheet('font: 600 8pt "Segoe UI";')
+            layout.addWidget(details_label)
+
+        buttons = QHBoxLayout()
+        buttons.setContentsMargins(0, 0, 0, 0)
+        buttons.setSpacing(8)
+        buttons.addStretch(1)
+        later_button = QPushButton('Not now', dialog)
+        continue_button = QPushButton('Update', dialog)
+        continue_button.setDefault(True)
+        buttons.addWidget(later_button)
+        buttons.addWidget(continue_button)
+        layout.addLayout(buttons)
+
+        later_button.clicked.connect(dialog.reject)
+        continue_button.clicked.connect(dialog.accept)
+
+        accepted = self._exec_dialog(dialog) == QDialog.Accepted
+        auto_install = bool(auto_install_checkbox.isEnabled() and auto_install_checkbox.isChecked())
+        return accepted, auto_install
+
+    def _ask_update_handoff(
+        self,
+        *,
+        version: str,
+        default_restart: bool = True,
+        requires_elevation: bool = False,
+    ) -> tuple[bool, bool]:
+        dialog = QDialog(self.window)
+        dialog.setModal(True)
+        dialog.setWindowTitle('Install update')
+        icon_obj = self.window.windowIcon()
+        if not icon_obj.isNull():
+            dialog.setWindowIcon(icon_obj)
+        self._apply_dialog_theme(dialog)
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(10)
+
+        title = QLabel('Update is ready to install', dialog)
+        title.setStyleSheet('font: 700 9pt "Segoe UI";')
+        body = QLabel(
+            (
+                f'A2M v{str(version or "latest")} has been downloaded.\n\n'
+                'The installer will now take over.\n\n'
+                'Click Update to close A2M and begin installation.'
+            ),
+            dialog,
+        )
+        body.setWordWrap(True)
+        body.setStyleSheet('font: 600 8pt "Segoe UI";')
+        uac_hint = QLabel('Windows may ask for administrator permission to continue this update.', dialog)
+        uac_hint.setWordWrap(True)
+        uac_hint.setStyleSheet('font: 600 8pt "Segoe UI";')
+        uac_hint.setVisible(bool(requires_elevation))
+
+        restart_checkbox = QCheckBox('Restart A2M after update', dialog)
+        restart_checkbox.setChecked(bool(default_restart))
+
+        buttons = QHBoxLayout()
+        buttons.setContentsMargins(0, 0, 0, 0)
+        buttons.setSpacing(8)
+        buttons.addStretch(1)
+        abort_button = QPushButton('Abort', dialog)
+        continue_button = QPushButton('Update', dialog)
+        continue_button.setDefault(True)
+        buttons.addWidget(abort_button)
+        buttons.addWidget(continue_button)
+
+        layout.addWidget(title)
+        layout.addWidget(body)
+        layout.addWidget(uac_hint)
+        layout.addWidget(restart_checkbox)
+        layout.addLayout(buttons)
+
+        abort_button.clicked.connect(dialog.reject)
+        continue_button.clicked.connect(dialog.accept)
+
+        accepted = self._exec_dialog(dialog) == QDialog.Accepted
+        restart = bool(restart_checkbox.isChecked())
+        return accepted, restart
+
     def _restore_app_cursor_state(self) -> None:
         self.window.restore_cursor_state_after_modal()
 
@@ -635,6 +778,66 @@ class AppController(QObject):
             return int(dialog.exec())
         finally:
             self._restore_app_cursor_state()
+
+    def _show_update_progress_dialog(self) -> None:
+        dialog = self._update_progress_dialog
+        if dialog is not None:
+            dialog.show()
+            dialog.raise_()
+            dialog.activateWindow()
+            return
+        dialog = QProgressDialog('Preparing update...', 'Cancel', 0, 100, self.window)
+        dialog.setWindowTitle('Updating A2M')
+        dialog.setWindowModality(Qt.ApplicationModal)
+        dialog.setMinimumDuration(0)
+        dialog.setAutoClose(False)
+        dialog.setAutoReset(False)
+        dialog.setValue(0)
+        self._apply_dialog_theme(dialog)
+        dialog.setStyleSheet(
+            dialog.styleSheet()
+            + 'QProgressBar { border: 1px solid #2a2a2a; border-radius: 4px; text-align: center; }'
+            + 'QProgressBar::chunk { background-color: #2fbf71; border-radius: 3px; }'
+        )
+        dialog.canceled.connect(self._on_update_progress_canceled)
+        self._update_progress_dialog = dialog
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _update_update_progress_dialog(self, percent: float, text: str) -> None:
+        dialog = self._update_progress_dialog
+        if dialog is None:
+            return
+        value = max(0, min(100, int(round(float(percent)))))
+        dialog.setValue(value)
+        message = str(text or '').strip() or f'Updating... {value}%'
+        dialog.setLabelText(message)
+
+    def _on_update_progress_canceled(self) -> None:
+        self._update_update_progress_dialog(0, 'Canceling update...')
+        for worker in (self._update_worker, self._update_install_worker):
+            if worker is None:
+                continue
+            try:
+                worker.stop()
+            except Exception:
+                pass
+
+    def _close_update_progress_dialog(self) -> None:
+        dialog = self._update_progress_dialog
+        if dialog is None:
+            return
+        self._update_progress_dialog = None
+        try:
+            dialog.close()
+        finally:
+            dialog.deleteLater()
+
+    def _on_update_install_progress(self, percent: float, text: str) -> None:
+        message = str(text or '').strip() or f'Updating... {float(percent):.1f}%'
+        self.window.set_progress(percent, message)
+        self._update_update_progress_dialog(percent, message)
 
     def _pick_audio_file(self) -> str:
         selected, _ = QFileDialog.getOpenFileName(self.window, 'Choose audio file', '', SUPPORTED_AUDIO_FILTER)
@@ -859,6 +1062,7 @@ class AppController(QObject):
             or self.cudnn_install_in_progress
             or self.transcription_in_progress
             or self._gpu_validation_in_progress
+            or self._update_install_worker is not None
         )
         self.window.set_controls_state(file_enabled=not busy, convert_enabled=not busy and self._can_convert(), stop_enabled=self.transcription_in_progress)
 
@@ -1290,72 +1494,243 @@ class AppController(QObject):
         self._show_info('Settings reset', 'All settings were reset to defaults.')
 
     def check_for_updates(self, *, manual: bool) -> None:
+        self._trigger_update_check(bool(manual))
+
+    def _trigger_update_check(self, manual: bool) -> None:
         if self.update_check_in_progress:
             if manual:
                 self._show_info('Update check', 'An update check is already in progress.')
             return
+        if self._update_worker is not None or self._update_install_worker is not None:
+            if manual:
+                self._show_info('Update check', 'An update operation is already in progress.')
+            return
         self.update_check_in_progress = True
-        worker = UpdateCheckWorker(manual=manual)
+        self._update_check_manual = bool(manual)
+        worker = UpdateCheckWorker()
         thread = self._create_worker_thread(worker)
-        worker.finishedSuccess.connect(self._on_update_check_success)
-        worker.finishedStopped.connect(lambda: None)
-        worker.errorRaised.connect(lambda msg: self._show_error('Update error', msg))
-        thread.finished.connect(self._on_update_check_finished)
+        worker.finishedSuccess.connect(self._on_update_check_success, Qt.QueuedConnection)
+        worker.finishedStopped.connect(self._on_update_check_stopped, Qt.QueuedConnection)
+        worker.errorRaised.connect(self._on_update_check_error, Qt.QueuedConnection)
+        thread.finished.connect(self._on_update_check_worker_finished)
         self._update_thread = thread
         self._update_worker = worker
         thread.start()
 
-    def _on_update_check_success(self, payload: object) -> None:
-        if isinstance(payload, dict):
-            manual = bool(payload.get('manual', False))
-            update_available = bool(payload.get('update_available', False))
-            latest_display = str(payload.get('latest_display', '') or '')
-            download_url = str(payload.get('download_url', '') or '')
-        else:
-            manual = bool(getattr(payload, 'manual', False))
-            update_available = bool(getattr(payload, 'update_available', False))
-            latest_display = str(getattr(payload, 'latest_display', '') or '')
-            download_url = str(getattr(payload, 'download_url', '') or '')
-        if not latest_display and not download_url and (not update_available) and (not manual):
+    def _trigger_update_install(self, payload: dict[str, object]) -> None:
+        if self._update_install_worker is not None:
             return
-        if update_available:
-            prompt = f'A newer version - v{latest_display} is available!\nWould you like to download it now?'
-            if self._ask_question('Update available', prompt, default_button=QMessageBox.Yes) == QMessageBox.Yes:
-                webbrowser.open(download_url)
-                self.window.close()
-        elif manual:
-            self._show_info('Update check', 'You are already on the latest version.')
+        if (
+            self.transcription_in_progress
+            or self.model_download_in_progress
+            or self.runtime_pack_download_in_progress
+            or self.cudnn_install_in_progress
+        ):
+            self._show_info('Update install blocked', 'Stop active operations before installing updates.')
+            return
+        self._update_install_fallback_url = str(payload.get('url') or payload.get('download_url') or OFFICIAL_PAGE_URL)
+        self.update_check_in_progress = True
+        self._apply_controls_state()
+        self.window.set_console_text('Preparing update package...\nPlease wait...')
+        self.window.set_progress(0, 'Preparing update...')
+        self._show_update_progress_dialog()
+        worker = UpdateInstallWorker(payload=dict(payload))
+        thread = self._create_worker_thread(worker)
+        worker.progressChanged.connect(self._on_update_install_progress, Qt.QueuedConnection)
+        worker.handoffRequested.connect(self._on_update_install_handoff_requested, Qt.QueuedConnection)
+        worker.finishedSuccess.connect(self._on_update_install_success, Qt.QueuedConnection)
+        worker.finishedStopped.connect(self._on_update_install_stopped, Qt.QueuedConnection)
+        worker.errorRaised.connect(self._on_update_install_error, Qt.QueuedConnection)
+        thread.finished.connect(self._on_update_install_worker_finished)
+        self._update_install_thread = thread
+        self._update_install_worker = worker
+        thread.start()
 
-    def _on_update_check_finished(self) -> None:
-        self.update_check_in_progress = False
+    def _on_update_check_success(self, payload: object) -> None:
+        self._finish_update_check(bool(self._update_check_manual), payload)
+
+    def _on_update_check_stopped(self) -> None:
+        self._finish_update_check(bool(self._update_check_manual), {'status': 'stopped'})
+
+    def _on_update_check_error(self, msg: str) -> None:
+        self._finish_update_check(
+            bool(self._update_check_manual),
+            {'status': 'error', 'error': str(msg or 'Unknown error')},
+        )
+
+    def _on_update_check_worker_finished(self) -> None:
         self._update_thread = None
         self._update_worker = None
+        self.update_check_in_progress = self._update_install_worker is not None
+        self._close_if_update_cancel_requested()
 
-    def _cancel_update_check(self) -> None:
-        worker = self._update_worker
-        thread = self._update_thread
-        if worker is not None:
+    def _on_update_install_worker_finished(self) -> None:
+        self._update_install_thread = None
+        self._update_install_worker = None
+        self.update_check_in_progress = self._update_worker is not None
+        self._apply_controls_state()
+        if self._update_worker is None:
+            self._close_update_progress_dialog()
+        if self._update_worker is None:
+            self._update_install_fallback_url = ''
+        self._close_if_update_cancel_requested()
+
+    def _on_update_install_success(self, payload: object) -> None:
+        self._finish_update_install(payload)
+
+    def _on_update_install_stopped(self) -> None:
+        self._finish_update_install({'status': 'canceled'})
+
+    def _on_update_install_error(self, msg: str) -> None:
+        self._finish_update_install({'status': 'error', 'error': str(msg or 'Unknown error')})
+
+    def _on_update_install_handoff_requested(self, payload: object) -> None:
+        info = payload if isinstance(payload, dict) else {}
+        version = str(info.get('version') or '')
+        requires_elevation = bool(info.get('requires_elevation', False))
+        self._update_update_progress_dialog(99, 'Ready to hand off to installer. Waiting for your confirmation...')
+        dialog = self._update_progress_dialog
+        if dialog is not None:
+            dialog.setCancelButton(None)
+        continue_update, restart_after = self._ask_update_handoff(
+            version=version,
+            default_restart=True,
+            requires_elevation=requires_elevation,
+        )
+        worker = self._update_install_worker
+        if worker is None:
+            return
+        worker.set_handoff_decision(
+            continue_update=bool(continue_update),
+            restart_after_update=bool(restart_after),
+        )
+
+    def _finish_update_check(self, manual: bool, result: object) -> None:
+        payload = result if isinstance(result, dict) else {}
+        status = str(payload.get('status', 'error') or 'error')
+        if status == 'stopped':
+            return
+        if status == 'available':
+            latest = str(payload.get('latest', '') or '')
+            download_url = str(payload.get('url', '') or OFFICIAL_PAGE_URL)
+            setup_url = str(payload.get('setup_url', '') or '')
+            setup_sha256 = str(payload.get('setup_sha256', '') or '')
+            try:
+                setup_size = max(0, int(payload.get('setup_size', 0) or 0))
+            except Exception:
+                setup_size = 0
+            can_install = bool(payload.get('install_supported', False)) and bool(setup_url) and bool(setup_sha256) and setup_size > 0
+            requires_manual_update = bool(payload.get('requires_manual_update', False))
+            if not getattr(sys, 'frozen', False):
+                can_install = False
+            if requires_manual_update:
+                can_install = False
+            notes = [str(item or '').strip() for item in (payload.get('notes') or []) if str(item or '').strip()]
+            notes_text = ''
+            if notes:
+                notes_text = '\n\nWhat\'s new:\n' + '\n'.join((f'- {line}' for line in notes[:8]))
+            if requires_manual_update:
+                minimum_supported = str(payload.get('minimum_supported_version') or '1.0.0').strip() or '1.0.0'
+                notes_text += (
+                    '\n\nYour current version is below the minimum supported '
+                    f'auto-update baseline ({minimum_supported}).'
+                )
+            proceed, auto_install = self._ask_update_install_preference(
+                latest_version=latest,
+                details_text=notes_text,
+                install_supported=can_install,
+            )
+            if proceed:
+                if can_install and auto_install:
+                    QTimer.singleShot(0, lambda install_payload=dict(payload): self._trigger_update_install(install_payload))
+                else:
+                    webbrowser.open(download_url)
+            return
+        if status == 'up_to_date':
+            if manual:
+                self._show_info('Update check', 'You are already on the latest version.')
+            return
+        if manual:
+            message = str(payload.get('error', 'Unknown error') or 'Unknown error')
+            self._show_warning('Update check failed', f'Could not check for updates:\n{message}')
+
+    def _finish_update_install(self, payload: object) -> None:
+        result = payload if isinstance(payload, dict) else {}
+        status = str(result.get('status', 'error') or 'error')
+        if status == 'canceled':
+            self._close_update_progress_dialog()
+            if self.close_after_update_operation:
+                return
+            self._show_info('Update canceled', 'Update was canceled before installation started.')
+            return
+        if status == 'aborted':
+            self._close_update_progress_dialog()
+            self._show_info('Update canceled', 'Update was aborted. No installer was launched.')
+            return
+        if status == 'ready':
+            version = str(result.get('version') or '').strip() or 'latest'
+            if bool(result.get('restart_after_update', True)):
+                self.window.set_progress(100, f'Handing off to installer for v{version} (app will restart after update).')
+            else:
+                self.window.set_progress(100, f'Handing off to installer for v{version}...')
+            self.window.set_console_text('Installer handoff in progress...\nClosing A2M to continue update.')
+            QTimer.singleShot(250, self.window.close)
+            return
+        self._close_update_progress_dialog()
+        message = str(result.get('error', 'Unknown error') or 'Unknown error')
+        self._show_warning('Update install failed', f'Could not install update:\n{message}')
+        fallback_url = str(self._update_install_fallback_url or '').strip()
+        if not fallback_url:
+            return
+        answer = self._ask_question(
+            'Update install',
+            'Would you like to open the download page instead?',
+            default_button=QMessageBox.Yes,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        try:
+            webbrowser.open(fallback_url)
+        except Exception as exc:
+            self._show_warning('Update install', f'Could not open update page:\n{exc}')
+
+    def _cancel_update_check(self) -> bool:
+        request_timeout_seconds = max(1.0, float(UPDATE_CHECK_TIMEOUT_SECONDS) * 2.0)
+        wait_timeout_ms = int(min(30000.0, (request_timeout_seconds + 3.0) * 1000.0))
+        for worker in (self._update_worker, self._update_install_worker):
+            if worker is None:
+                continue
             try:
                 worker.stop()
             except Exception:
                 pass
-            for signal in (worker.finishedSuccess, worker.finishedStopped, worker.errorRaised, worker.finished):
-                try:
-                    signal.disconnect()
-                except Exception:
-                    pass
-        if thread is not None:
-            for signal in (thread.started, thread.finished):
-                try:
-                    signal.disconnect()
-                except Exception:
-                    pass
+        all_stopped = True
+        for thread in (self._update_thread, self._update_install_thread):
+            if thread is None:
+                continue
             if thread.isRunning():
                 thread.quit()
-                thread.wait(max(1000, int(UPDATE_CHECK_TIMEOUT_SECONDS * 1000) + 500))
-        self.update_check_in_progress = False
+                if not thread.wait(wait_timeout_ms):
+                    all_stopped = False
+        if not all_stopped:
+            self.update_check_in_progress = True
+            return False
         self._update_thread = None
         self._update_worker = None
+        self._update_install_thread = None
+        self._update_install_worker = None
+        self.update_check_in_progress = False
+        self._close_update_progress_dialog()
+        self._apply_controls_state()
+        return True
+
+    def _close_if_update_cancel_requested(self) -> None:
+        if not self.close_after_update_operation:
+            return
+        if self._update_worker is not None or self._update_install_worker is not None:
+            return
+        self.close_after_update_operation = False
+        self.window.close()
 
     def _open_path_in_shell(self, path: Path, *, failure_title: str) -> bool:
         try:
@@ -1378,7 +1753,13 @@ class AppController(QObject):
         self._open_path_in_shell(path, failure_title='Open folder failed')
 
     def _handle_close_request(self) -> bool:
-        if self.close_after_transcription or self.close_after_model_download or self.close_after_runtime_pack_download or self.close_after_cudnn_install:
+        if (
+            self.close_after_transcription
+            or self.close_after_model_download
+            or self.close_after_runtime_pack_download
+            or self.close_after_cudnn_install
+            or self.close_after_update_operation
+        ):
             return False
         if self.model_download_in_progress:
             reply = self._ask_question('Download in progress', 'Model download is still in progress.\n\nStop download and exit A2M?', default_button=QMessageBox.No)
@@ -1415,8 +1796,13 @@ class AppController(QObject):
             self.stop_conversion()
             return False
         if self.update_check_in_progress:
-            self._cancel_update_check()
+            self.close_after_update_operation = True
+            self.window.set_console_text('Stopping update operation...\nPlease wait...')
+            if not self._cancel_update_check():
+                return False
+            self.close_after_update_operation = False
         self._persist_config()
         return True
+
 
 

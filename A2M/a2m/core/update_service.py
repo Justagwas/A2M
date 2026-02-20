@@ -1,133 +1,193 @@
 from __future__ import annotations
-import json
+
 import re
-from threading import Event
-from xml.etree import ElementTree as ET
-from .constants import DOWNLOAD_HEADER_PROFILES, OFFICIAL_PAGE_URL, UPDATE_CHECK_TIMEOUT_SECONDS, UPDATE_GITHUB_DOWNLOAD_URL, UPDATE_GITHUB_LATEST_URL, UPDATE_MANIFEST_URL, UPDATE_SOURCEFORGE_RSS_URL
-from .http_service import fetch_text
+import sys
+from collections.abc import Callable
+from pathlib import Path
+from threading import Event, Thread
 
-def _pick_string_field(payload: object, *keys: str) -> str:
-    if not isinstance(payload, dict):
-        return ''
-    normalized: dict[str, object] = {}
-    for key, value in payload.items():
-        normalized[str(key or '').strip().lower()] = value
-    for key in keys:
-        value = normalized.get(str(key or '').strip().lower())
-        if value is None:
-            continue
-        text = str(value).strip()
-        if text:
-            return text
-    return ''
+from .config import (
+    APP_NAME,
+    APP_SHORT_NAME,
+    APP_VERSION,
+    DOWNLOAD_HEADER_PROFILES,
+    DOWNLOAD_RETRIES_PER_HEADER,
+    DOWNLOAD_RETRY_BACKOFF_SECONDS,
+    INNO_SETUP_APP_ID,
+    OFFICIAL_PAGE_URL,
+    UPDATE_CHECK_TIMEOUT_SECONDS,
+    UPDATE_GITHUB_DOWNLOAD_URL,
+    UPDATE_MANIFEST_URL,
+)
+from .paths import app_dir, localappdata_dir
+from .self_updater import (
+    PreparedUpdateInstall,
+    SelfUpdater,
+    UpdateCheckData,
+    is_newer_version,
+    normalize_version,
+    parse_semver,
+)
 
-def _normalize_download_url(url_text: str) -> str:
-    text = str(url_text or '').strip()
-    if text:
-        return text
-    fallback = str(UPDATE_GITHUB_DOWNLOAD_URL or '').strip()
-    if fallback:
-        return fallback
-    return str(OFFICIAL_PAGE_URL or '').strip()
+_UPDATER: SelfUpdater | None = None
+_SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 
-def _fetch_text(url: str, *, stop_event: Event | None=None) -> tuple[str, str]:
-    return fetch_text(
-        url,
-        headers_profiles=DOWNLOAD_HEADER_PROFILES,
-        timeout_seconds=UPDATE_CHECK_TIMEOUT_SECONDS,
-        stop_event=stop_event,
-        stop_message='Update check stopped.',
-    )
-
-def _fetch_json(url: str, *, stop_event: Event | None=None) -> dict | None:
-    payload, _ = _fetch_text(url, stop_event=stop_event)
-    data = json.loads(payload)
-    return data if isinstance(data, dict) else None
-
-def _extract_version(value: object) -> str:
-    text = str(value or '').strip()
-    if not text:
-        return ''
-    candidate = text
-    match = re.search('(\\d+(?:\\.\\d+)+)', text)
-    if match:
-        candidate = match.group(1)
-    parsed = parse_version_tuple(candidate)
-    if not parsed:
-        return ''
-    return '.'.join((str(part) for part in parsed))
-
-def normalize_version(version_text: str) -> str:
-    text = str(version_text or '').strip()
-    if text.lower().startswith('v'):
-        text = text[1:]
-    return text
 
 def parse_version_tuple(version_text: str) -> tuple[int, ...] | None:
-    normalized = normalize_version(version_text)
-    if not normalized or not re.match('^\\d+(\\.\\d+)*$', normalized):
-        return None
-    return tuple((int(part) for part in normalized.split('.')))
+    return parse_semver(normalize_version(version_text))
 
-def is_newer_version(latest_version: str, current_version: str) -> bool:
-    latest_tuple = parse_version_tuple(latest_version)
-    current_tuple = parse_version_tuple(current_version)
-    if not latest_tuple or not current_tuple:
-        return False
-    width = max(len(latest_tuple), len(current_tuple))
-    latest_tuple = latest_tuple + (0,) * (width - len(latest_tuple))
-    current_tuple = current_tuple + (0,) * (width - len(current_tuple))
-    return latest_tuple > current_tuple
 
-def fetch_update_manifest(stop_event: Event | None=None) -> tuple[str, str]:
-    if stop_event is not None and stop_event.is_set():
-        raise InterruptedError('Update check stopped.')
-    errors: list[str] = []
+def _safe_int(value: object, default: int = 0) -> int:
     try:
-        data = _fetch_json(UPDATE_MANIFEST_URL, stop_event=stop_event)
-        if isinstance(data, dict):
-            nested = data.get('latest')
-            manifest = nested if isinstance(nested, dict) else data
-            latest_version = _pick_string_field(manifest, 'version', 'latest', 'app_version', 'latest_version')
-            download_url = _pick_string_field(manifest, 'download_url', 'url', 'download')
-            normalized_version = _extract_version(latest_version)
-            if normalized_version:
-                return (normalized_version, _normalize_download_url(download_url))
-        errors.append('Manifest is missing a valid version.')
-    except InterruptedError:
-        raise
-    except Exception as exc:
-        errors.append(str(exc))
-    github_latest_url = str(UPDATE_GITHUB_LATEST_URL or '').strip()
-    if github_latest_url:
-        try:
-            body, final_url = _fetch_text(github_latest_url, stop_event=stop_event)
-            for source in (final_url, body):
-                match = re.search('/tag/v?(\\d+(?:\\.\\d+)+)', source or '')
-                if not match:
-                    match = re.search('/releases/tag/v?(\\d+(?:\\.\\d+)+)', source or '')
-                if match:
-                    return (match.group(1), _normalize_download_url(''))
-            errors.append('Could not parse version from GitHub latest release.')
-        except InterruptedError:
-            raise
-        except Exception as exc:
-            errors.append(str(exc))
-    sourceforge_rss_url = str(UPDATE_SOURCEFORGE_RSS_URL or '').strip()
-    if sourceforge_rss_url:
-        try:
-            rss_text, _ = _fetch_text(sourceforge_rss_url, stop_event=stop_event)
-            xml_root = ET.fromstring(rss_text)
-            titles = xml_root.findall('.//item/title')
-            for title in titles:
-                normalized_version = _extract_version(title.text or '')
-                if normalized_version:
-                    return (normalized_version, _normalize_download_url(''))
-            errors.append('Could not parse version from SourceForge RSS.')
-        except InterruptedError:
-            raise
-        except Exception as exc:
-            errors.append(str(exc))
-    if errors:
-        raise RuntimeError(errors[-1])
-    raise RuntimeError('Could not parse latest version from update sources.')
+        return int(value)
+    except Exception:
+        return int(default)
+
+
+def _sanitize_notes(value: object) -> list[str]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [str(item or "").strip() for item in value if str(item or "").strip()]
+
+
+def _runtime_storage_dir() -> Path:
+    root = localappdata_dir() / APP_SHORT_NAME
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _get_updater() -> SelfUpdater:
+    global _UPDATER
+    if _UPDATER is None:
+        executable_name = f"{APP_SHORT_NAME}.exe" if sys.platform == "win32" else APP_SHORT_NAME
+        _UPDATER = SelfUpdater(
+            app_name=APP_NAME,
+            app_version=APP_VERSION,
+            manifest_url=UPDATE_MANIFEST_URL,
+            page_url=OFFICIAL_PAGE_URL,
+            setup_url=UPDATE_GITHUB_DOWNLOAD_URL,
+            installer_app_id=INNO_SETUP_APP_ID,
+            executable_name=executable_name,
+            install_dir=app_dir(),
+            runtime_storage_dir=_runtime_storage_dir(),
+            timeout_seconds=float(UPDATE_CHECK_TIMEOUT_SECONDS),
+            request_retries=max(1, int(DOWNLOAD_RETRIES_PER_HEADER)),
+            manifest_request_retries=1,
+            retry_backoff_seconds=max(0.0, float(DOWNLOAD_RETRY_BACKOFF_SECONDS)),
+            header_profiles=DOWNLOAD_HEADER_PROFILES,
+        )
+        Thread(target=_UPDATER.recover_pending_update, daemon=True).start()
+    return _UPDATER
+
+
+def check_for_updates(current_version: str, *, stop_event: Event | None = None) -> UpdateCheckData:
+    return _get_updater().check_for_updates(current_version, stop_event=stop_event)
+
+
+def fetch_update_manifest(stop_event: Event | None = None) -> tuple[str, str]:
+    check = check_for_updates(APP_VERSION, stop_event=stop_event)
+    return str(check.latest_version or ""), str(check.page_url or OFFICIAL_PAGE_URL)
+
+
+def _build_check_data_from_payload(payload: dict[str, object]) -> UpdateCheckData:
+    current_version = normalize_version(str(payload.get("current_version") or APP_VERSION)) or "0.0.0"
+    latest_version = normalize_version(str(payload.get("latest") or "")) or ""
+    current_tuple = parse_semver(current_version)
+    latest_tuple = parse_semver(latest_version)
+    if current_tuple is None:
+        raise RuntimeError(f"Current version is not valid semver: {current_version!r}")
+    if latest_tuple is None:
+        raise RuntimeError(f"Latest version is not valid semver: {latest_version!r}")
+    if not bool(payload.get("update_available", False)):
+        raise RuntimeError("Update payload is not marked as update-available.")
+    if latest_tuple <= current_tuple:
+        raise RuntimeError(
+            f"Update payload does not contain a newer version (current={current_version}, latest={latest_version})."
+        )
+
+    setup_url = str(payload.get("setup_url") or "").strip()
+    setup_sha256 = str(payload.get("setup_sha256") or "").strip().lower()
+    setup_size = max(0, _safe_int(payload.get("setup_size"), 0))
+    if not setup_url:
+        raise RuntimeError("Update payload does not include a setup installer URL.")
+    if not _SHA256_RE.fullmatch(setup_sha256):
+        raise RuntimeError("Update payload does not include a valid setup SHA256.")
+    if setup_size <= 0:
+        raise RuntimeError("Update payload does not include a valid setup size.")
+
+    return UpdateCheckData(
+        update_available=True,
+        current_version=current_version,
+        latest_version=latest_version,
+        page_url=str(payload.get("url") or OFFICIAL_PAGE_URL),
+        setup_url=setup_url,
+        setup_sha256=setup_sha256,
+        setup_size=setup_size,
+        released=str(payload.get("released") or ""),
+        notes=_sanitize_notes(payload.get("notes")),
+        source="latest.json",
+        channel=str(payload.get("channel") or "stable"),
+        minimum_supported_version=normalize_version(str(payload.get("minimum_supported_version") or "1.0.0")) or "1.0.0",
+        requires_manual_update=bool(payload.get("requires_manual_update", False)),
+        setup_managed_install=bool(payload.get("setup_managed_install", False)),
+    )
+
+
+def prepare_update_from_payload(
+    payload: dict[str, object],
+    *,
+    stop_event: Event | None = None,
+    progress_callback: Callable[[float, str], None] | None = None,
+) -> PreparedUpdateInstall:
+    return _get_updater().prepare_update(
+        _build_check_data_from_payload(payload),
+        stop_event=stop_event,
+        progress_callback=progress_callback,
+    )
+
+
+def launch_prepared_update(
+    prepared: PreparedUpdateInstall,
+    *,
+    restart_after_update: bool,
+) -> None:
+    _get_updater().launch_prepared_update(
+        prepared,
+        restart_after_update=bool(restart_after_update),
+    )
+
+
+def discard_prepared_update(prepared: PreparedUpdateInstall) -> None:
+    _get_updater().discard_prepared_update(prepared)
+
+
+def install_update_from_payload(
+    payload: dict[str, object],
+    *,
+    stop_event: Event | None = None,
+    progress_callback: Callable[[float, str], None] | None = None,
+) -> str:
+    check_data = _build_check_data_from_payload(payload)
+    return str(
+        _get_updater().install_update(
+            check_data,
+            stop_event=stop_event,
+            progress_callback=progress_callback,
+        )
+        or check_data.latest_version
+        or ""
+    )
+
+
+__all__ = [
+    "check_for_updates",
+    "discard_prepared_update",
+    "fetch_update_manifest",
+    "install_update_from_payload",
+    "is_newer_version",
+    "launch_prepared_update",
+    "normalize_version",
+    "prepare_update_from_payload",
+    "parse_semver",
+    "parse_version_tuple",
+]

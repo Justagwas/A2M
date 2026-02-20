@@ -11,11 +11,11 @@ from typing import Callable, Iterable, Iterator
 import numpy as np
 from piano_transcription_inference import config as pti_config
 from piano_transcription_inference.utilities import RegressionPostProcessor, write_events_to_midi
-from .constants import MODERN_FRAME_THRESHOLD_DEFAULT, MODERN_FRAME_THRESHOLD_MAX, MODERN_FRAME_THRESHOLD_MIN
-from .constants import MODERN_OFFSET_THRESHOLD_DEFAULT, MODERN_OFFSET_THRESHOLD_MAX, MODERN_OFFSET_THRESHOLD_MIN
-from .constants import MODERN_ONSET_THRESHOLD_DEFAULT, MODERN_ONSET_THRESHOLD_MAX, MODERN_ONSET_THRESHOLD_MIN
-from .constants import MODERN_PEDAL_OFFSET_THRESHOLD_DEFAULT, MODERN_PEDAL_OFFSET_THRESHOLD_MAX, MODERN_PEDAL_OFFSET_THRESHOLD_MIN
-from .constants import OUTPUT_MIDI_DIR
+from .config import MODERN_FRAME_THRESHOLD_DEFAULT, MODERN_FRAME_THRESHOLD_MAX, MODERN_FRAME_THRESHOLD_MIN
+from .config import MODERN_OFFSET_THRESHOLD_DEFAULT, MODERN_OFFSET_THRESHOLD_MAX, MODERN_OFFSET_THRESHOLD_MIN
+from .config import MODERN_ONSET_THRESHOLD_DEFAULT, MODERN_ONSET_THRESHOLD_MAX, MODERN_ONSET_THRESHOLD_MIN
+from .config import MODERN_PEDAL_OFFSET_THRESHOLD_DEFAULT, MODERN_PEDAL_OFFSET_THRESHOLD_MAX, MODERN_PEDAL_OFFSET_THRESHOLD_MIN
+from .config import OUTPUT_MIDI_DIR
 from .model_service import get_existing_model_path
 from . import runtime_service
 try:
@@ -1952,3 +1952,4 @@ def convert_audio_to_midi(audio_file_path: Path | str, custom_name: str | None=N
         except Exception:
             pass
         raise
+

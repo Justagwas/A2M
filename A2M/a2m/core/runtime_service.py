@@ -3,7 +3,7 @@ import importlib.util
 import os
 import sys
 from pathlib import Path
-from .constants import GPU_BATCH_SIZE_MAX, GPU_BATCH_SIZE_MIN
+from .config import GPU_BATCH_SIZE_MAX, GPU_BATCH_SIZE_MIN
 from .onnx_runtime_service import RuntimeProbe, create_session as create_onnx_session
 from .onnx_runtime_service import probe_runtime_path as probe_runtime_path_only
 from .onnx_runtime_service import probe_runtime_support as probe_onnx_runtime_support
@@ -236,3 +236,4 @@ def create_session(model_path: Path | str, *, force_refresh: bool=False, device_
 
 def reset_runtime_cache(*, clear_import_cache: bool=True) -> None:
     reset_onnx_cache(clear_import_cache=clear_import_cache)
+

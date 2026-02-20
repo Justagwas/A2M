@@ -30,16 +30,12 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/github/v/tag/Justagwas/A2M.svg?label=Version)](
-https://github.com/Justagwas/A2M/tags)
-[![Last Commit](https://img.shields.io/github/last-commit/Justagwas/A2M/main.svg?style=flat&cacheSeconds=3600)](
-https://github.com/Justagwas/A2M/commits/main)
-[![Stars](https://img.shields.io/github/stars/Justagwas/A2M.svg?style=flat&cacheSeconds=3600)](
-https://github.com/Justagwas/A2M/stargazers)
-[![Open Issues](https://img.shields.io/github/issues/Justagwas/A2M.svg)](
-https://github.com/Justagwas/A2M/issues)
-[![License](https://img.shields.io/github/license/Justagwas/A2M.svg)](
-https://github.com/Justagwas/A2M/blob/main/LICENSE)
+[![Version](https://img.shields.io/github/v/tag/Justagwas/A2M.svg?label=Version)](https://github.com/Justagwas/A2M/tags)
+[![License](https://img.shields.io/github/license/Justagwas/A2M.svg)](https://github.com/Justagwas/A2M/blob/main/LICENSE)
+[![Last Commit](https://img.shields.io/github/last-commit/Justagwas/A2M/main.svg?style=flat&cacheSeconds=3600)](https://github.com/Justagwas/A2M/commits/main)
+[![Open Issues](https://img.shields.io/github/issues/Justagwas/A2M.svg)](https://github.com/Justagwas/A2M/issues)
+[![Stars](https://img.shields.io/github/stars/Justagwas/A2M.svg?style=flat&cacheSeconds=3600)](https://github.com/Justagwas/A2M/stargazers)
+![Installs (7d)](https://img.shields.io/badge/dynamic/json?style=flat&url=https%3A%2F%2Fdownload-stats-worker.justagwas.workers.dev%2Fdownloads%2Fa2m%3Frange%3Dweek&query=%24.data.weekly.all&label=Installs%20(7d))
 
 </div>
 
@@ -78,7 +74,7 @@ The app uses ONNX Runtime, supports CPU by default, and can switch to optional G
 - Optional GPU runtime packs are installed per-user under:
   - `%LOCALAPPDATA%\A2M\runtime_packs\cuda`
   - `%LOCALAPPDATA%\A2M\runtime_packs\dml`
-- Runtime-pack endpoints are defined in [`A2M/a2m/core/app_config.json`](https://github.com/Justagwas/A2M/blob/main/A2M/a2m/core/app_config.json).
+- Runtime-pack endpoints are defined in [`A2M/a2m/core/config.py`](https://github.com/Justagwas/A2M/blob/main/A2M/a2m/core/config.py).
 
 ### Transcription Engines
 
@@ -111,8 +107,8 @@ py A2M.py
 
 ### Configuration Files
 
-- App metadata and release/update/runtime URLs: [`A2M/a2m/core/app_config.json`](https://github.com/Justagwas/A2M/blob/main/A2M/a2m/core/app_config.json)
-- App constants and defaults: [`A2M/a2m/core/constants.py`](https://github.com/Justagwas/A2M/blob/main/A2M/a2m/core/constants.py)
+- App metadata/constants and release/update/runtime URLs: [`A2M/a2m/core/config.py`](https://github.com/Justagwas/A2M/blob/main/A2M/a2m/core/config.py)
+- `A2M/a2m/core/app_config.json` has been removed; metadata now lives directly in `config.py`.
 - Runtime settings serialization and normalization: [`A2M/a2m/core/config_service.py`](https://github.com/Justagwas/A2M/blob/main/A2M/a2m/core/config_service.py)
 - Runtime/path resolution helpers: [`A2M/a2m/core/paths.py`](https://github.com/Justagwas/A2M/blob/main/A2M/a2m/core/paths.py)
 - Model download/storage logic: [`A2M/a2m/core/model_service.py`](https://github.com/Justagwas/A2M/blob/main/A2M/a2m/core/model_service.py)
