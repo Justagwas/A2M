@@ -1,5 +1,20 @@
-#Check out my other projects! https://justagwas.com/projects
-#The OFFICIAL Repo - https://github.com/Justagwas/a2m
+﻿"""
+A2M - Audio to MIDI Converter
+
+Copyright 2026 Justagwas
+
+This program is licensed under the GNU General Public License v3.0
+See the LICENSE file in the project root for the full license text.
+
+Official Project Page:
+https://justagwas.com/projects/a2m
+
+Official Source Code:
+https://github.com/justagwas/a2m
+https://sourceforge.net/projects/a2m
+
+SPDX-License-Identifier: GPL-3.0-or-later
+"""
 from __future__ import annotations
 import ctypes
 import os
