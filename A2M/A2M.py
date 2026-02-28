@@ -1,4 +1,4 @@
-﻿"""
+"""
 A2M - Audio to MIDI Converter
 
 Copyright 2026 Justagwas
