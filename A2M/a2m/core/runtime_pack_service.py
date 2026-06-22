@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 import uuid
 from pathlib import Path
 from threading import Event
@@ -9,9 +12,9 @@ from . import gpu_runtime_service, runtime_service
 from .archive_service import assert_not_stopped as _assert_not_stopped
 from .archive_service import remove_tree as _remove_tree
 from .archive_service import safe_extract_zip as _safe_extract_zip
-from .config import ONNX_CUDA_RUNTIME_PACK_URL, ONNX_DML_RUNTIME_PACK_URL
-from .model_service import download_file
-from .paths import localappdata_dir
+from .config import ONNX_CUDA_RUNTIME_PACK_MAX_BYTES, ONNX_CUDA_RUNTIME_PACK_SHA256, ONNX_CUDA_RUNTIME_PACK_URL, ONNX_DML_RUNTIME_PACK_MAX_BYTES, ONNX_DML_RUNTIME_PACK_SHA256, ONNX_DML_RUNTIME_PACK_URL
+from .model_service import download_file, get_existing_model_path
+from .paths import app_dir, localappdata_dir
 from .runtime_artifacts import runtime_root_from_path as _shared_runtime_root_from_path
 
 _PROVIDERS = ('cuda', 'dml')
@@ -71,6 +74,31 @@ def provider_pack_url(provider: str) -> str:
     return ''
 
 
+def provider_pack_sha256(provider: str) -> str:
+    normalized = _normalize_provider(provider)
+    if normalized == 'cuda':
+        return str(ONNX_CUDA_RUNTIME_PACK_SHA256 or '').strip()
+    if normalized == 'dml':
+        return str(ONNX_DML_RUNTIME_PACK_SHA256 or '').strip()
+    return ''
+
+
+def provider_pack_max_bytes(provider: str) -> int:
+    normalized = _normalize_provider(provider)
+    if normalized == 'cuda':
+        return int(ONNX_CUDA_RUNTIME_PACK_MAX_BYTES)
+    if normalized == 'dml':
+        return int(ONNX_DML_RUNTIME_PACK_MAX_BYTES)
+    return 0
+
+
+def _require_provider_pack_sha256(provider: str) -> str:
+    digest = provider_pack_sha256(provider)
+    if len(digest) != 64:
+        raise RuntimeError(f'{provider_display_name(provider)} runtime pack integrity hash is not configured.')
+    return digest
+
+
 def _runtime_root_from_path(path: Path) -> Path:
     return _shared_runtime_root_from_path(path)
 
@@ -86,6 +114,48 @@ def _read_metadata(path: Path) -> dict[str, object]:
     if not isinstance(payload, dict):
         raise RuntimeError('Runtime pack metadata is invalid.')
     return payload
+
+
+def _helper_command(task: str, runtime_path: Path, provider: str, model_path: Path | None=None) -> list[str]:
+    args = ['--gpu-helper', task, '--runtime-path', str(runtime_path), '--provider', provider]
+    if model_path is not None:
+        args.extend(['--model', str(model_path)])
+    if getattr(sys, 'frozen', False):
+        return [str(sys.executable), *args]
+    return [str(sys.executable), str(app_dir() / 'A2M.py'), *args]
+
+
+def validate_pack_in_helper(path: Path, expected_provider: str) -> None:
+    provider = _normalize_provider(expected_provider)
+    if not provider:
+        raise RuntimeError("Expected provider must be 'cuda' or 'dml'.")
+    runtime_root = _runtime_root_from_path(Path(path))
+    model_path = get_existing_model_path()
+    task = 'create-session' if model_path is not None else 'validate-provider'
+    cmd = _helper_command(task, runtime_root, provider, model_path=model_path)
+    kwargs: dict[str, object] = {'capture_output': True, 'text': True, 'timeout': 45, 'check': False}
+    if os.name == 'nt':
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = 0
+        kwargs['startupinfo'] = startupinfo
+        kwargs['creationflags'] = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+    try:
+        proc = subprocess.run(cmd, **kwargs)
+    except Exception as exc:
+        raise RuntimeError(f'Runtime pack helper validation failed to run: {exc}') from exc
+    payload: dict[str, object] = {}
+    for line in reversed(str(proc.stdout or '').splitlines()):
+        try:
+            candidate = json.loads(line.strip())
+        except Exception:
+            continue
+        if isinstance(candidate, dict):
+            payload = candidate
+            break
+    if int(proc.returncode) != 0 or not bool(payload.get('ok', False)):
+        reason = str(payload.get('reason_text') or payload.get('details') or proc.stderr or 'Runtime pack failed helper validation.').strip()
+        raise RuntimeError(reason)
 
 
 def validate_pack_root(path: Path, expected_provider: str) -> None:
@@ -152,7 +222,8 @@ def download_and_install_pack(provider: str, *, progress_callback=None, stop_eve
     replaced_existing = False
     try:
         _assert_not_stopped(stop_event, message='Runtime pack download stopped by user.')
-        download_file(pack_url, archive_path, progress_callback=progress_callback, stop_event=stop_event)
+        expected_sha256 = _require_provider_pack_sha256(normalized_provider)
+        download_file(pack_url, archive_path, progress_callback=progress_callback, stop_event=stop_event, expected_sha256=expected_sha256, max_download_bytes=provider_pack_max_bytes(normalized_provider))
         _assert_not_stopped(stop_event, message='Runtime pack download stopped by user.')
         _safe_extract_zip(
             archive_path,
@@ -164,6 +235,7 @@ def download_and_install_pack(provider: str, *, progress_callback=None, stop_eve
         )
         runtime_root = _runtime_root_from_path(stage_dir)
         validate_pack_root(runtime_root, normalized_provider)
+        validate_pack_in_helper(runtime_root, normalized_provider)
         if backup_dir.exists():
             _remove_tree(backup_dir)
         if final_dir.exists():

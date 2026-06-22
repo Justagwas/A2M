@@ -1,22 +1,55 @@
 from __future__ import annotations
+import re
 import uuid
 from pathlib import Path
 from threading import Event
 from typing import Callable
-from .config import DOWNLOAD_HEADER_PROFILES, DOWNLOAD_RETRIES_PER_HEADER, DOWNLOAD_RETRY_BACKOFF_SECONDS, DOWNLOAD_TIMEOUT_SECONDS, MODEL_FILENAME, MODEL_MIN_BYTES, MODEL_URL
-from .http_service import download_file_with_retries
+from .config import DOWNLOAD_HEADER_PROFILES, DOWNLOAD_RETRIES_PER_HEADER, DOWNLOAD_RETRY_BACKOFF_SECONDS, DOWNLOAD_TIMEOUT_SECONDS, MODEL_DOWNLOAD_MAX_BYTES, MODEL_FILENAME, MODEL_MIN_BYTES, MODEL_SHA256, MODEL_URL
+from .http_service import download_file_with_retries, sha256_file
 from .paths import app_dir, dedupe_paths, localappdata_dir
 ProgressCallback = Callable[[float], None]
 LogCallback = Callable[[str], None]
 MODEL_DIR = localappdata_dir() / 'A2M' / 'models'
+_SHA256_RE = re.compile(r'^[0-9a-f]{64}$')
+_MODEL_HASH_CACHE: dict[tuple[str, int, int, str], bool] = {}
 
 def get_model_candidate_dirs() -> list[Path]:
     primary = MODEL_DIR
     return dedupe_paths((primary, app_dir()))
 
+def _expected_model_sha256() -> str:
+    candidate = str(MODEL_SHA256 or '').strip().lower()
+    if _SHA256_RE.fullmatch(candidate):
+        return candidate
+    return ''
+
+def _model_hash_cache_key(path: Path, stat_result: object, expected_sha256: str) -> tuple[str, int, int, str]:
+    try:
+        path_key = str(path.resolve()).lower()
+    except Exception:
+        path_key = str(path).lower()
+    size = int(getattr(stat_result, 'st_size', 0))
+    mtime_ns = int(getattr(stat_result, 'st_mtime_ns', 0))
+    return path_key, size, mtime_ns, expected_sha256
+
 def _is_valid_model_file(path: Path) -> bool:
     try:
-        return path.exists() and path.is_file() and (path.stat().st_size >= MODEL_MIN_BYTES)
+        if not path.exists() or not path.is_file():
+            return False
+        stat_result = path.stat()
+        if stat_result.st_size < MODEL_MIN_BYTES:
+            return False
+        expected_sha256 = _expected_model_sha256()
+        if not expected_sha256:
+            return True
+        cache_key = _model_hash_cache_key(path, stat_result, expected_sha256)
+        cached = _MODEL_HASH_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+        valid = sha256_file(path) == expected_sha256
+        _MODEL_HASH_CACHE.clear()
+        _MODEL_HASH_CACHE[cache_key] = valid
+        return valid
     except Exception:
         return False
 
@@ -38,7 +71,7 @@ def can_write_dir(path: Path) -> bool:
     except Exception:
         return False
 
-def download_file(url: str, dest_path: Path | str, progress_callback: ProgressCallback | None=None, stop_event: Event | None=None) -> None:
+def download_file(url: str, dest_path: Path | str, progress_callback: ProgressCallback | None=None, stop_event: Event | None=None, *, expected_sha256: str | None=None, expected_size: int | None=None, max_download_bytes: int | None=None) -> None:
     download_file_with_retries(
         url,
         dest_path,
@@ -50,6 +83,9 @@ def download_file(url: str, dest_path: Path | str, progress_callback: ProgressCa
         stop_event=stop_event,
         stop_message='Model download stopped by user.',
         error_prefix='Failed to download model',
+        expected_sha256=MODEL_SHA256 if expected_sha256 is None else expected_sha256,
+        expected_size=expected_size,
+        max_download_bytes=MODEL_DOWNLOAD_MAX_BYTES if max_download_bytes is None else max_download_bytes,
     )
 
 def ensure_model_file(progress_callback: ProgressCallback | None=None, log_callback: LogCallback | None=None, stop_event: Event | None=None) -> Path:

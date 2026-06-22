@@ -10,7 +10,7 @@ from typing import Callable
 from .archive_service import assert_not_stopped as _assert_not_stopped
 from .archive_service import remove_tree as _remove_tree
 from .archive_service import safe_extract_zip as _safe_extract_zip
-from .config import CUDNN_DOWNLOAD_URL
+from .config import CUDNN_DOWNLOAD_MAX_BYTES, CUDNN_DOWNLOAD_SHA256, CUDNN_DOWNLOAD_SIZE, CUDNN_DOWNLOAD_URL
 from .model_service import download_file
 from .paths import dedupe_paths, localappdata_dir, normalized_path_key
 
@@ -118,6 +118,9 @@ def install_cudnn_runtime(*, progress_callback: ProgressCallback | None=None, st
     url = str(CUDNN_DOWNLOAD_URL or '').strip()
     if not url:
         raise RuntimeError('cuDNN download URL is not configured.')
+    expected_sha256 = str(CUDNN_DOWNLOAD_SHA256 or '').strip()
+    if len(expected_sha256) != 64:
+        raise RuntimeError('cuDNN download integrity hash is not configured.')
     token = uuid.uuid4().hex
     archive_path = _updates_dir() / f'cudnn-{token}.zip'
     stage_dir = _dependencies_dir() / f'.stage-cudnn-{token}'
@@ -126,7 +129,7 @@ def install_cudnn_runtime(*, progress_callback: ProgressCallback | None=None, st
     replaced_existing = False
     try:
         _assert_not_stopped(stop_event, message='cuDNN installation was stopped.')
-        download_file(url, archive_path, progress_callback=progress_callback, stop_event=stop_event)
+        download_file(url, archive_path, progress_callback=progress_callback, stop_event=stop_event, expected_sha256=expected_sha256, expected_size=CUDNN_DOWNLOAD_SIZE, max_download_bytes=CUDNN_DOWNLOAD_MAX_BYTES)
         _assert_not_stopped(stop_event, message='cuDNN installation was stopped.')
         _safe_extract_zip(
             archive_path,

@@ -5,6 +5,8 @@ import zipfile
 from pathlib import Path
 from threading import Event
 
+from .config import ARCHIVE_EXTRACT_MAX_BYTES
+
 
 def assert_not_stopped(stop_event: Event | None, *, message: str) -> None:
     if stop_event is not None and stop_event.is_set():
@@ -25,8 +27,10 @@ def safe_extract_zip(
     stop_message: str = 'Operation stopped by user.',
     unsafe_entry_prefix: str = 'Unsafe archive entry rejected',
     empty_message: str = 'Archive is empty.',
+    max_total_uncompressed_bytes: int | None = ARCHIVE_EXTRACT_MAX_BYTES,
 ) -> None:
     extracted_any = False
+    extracted_bytes = 0
     target_dir.mkdir(parents=True, exist_ok=True)
     resolved_target = target_dir.resolve()
     with zipfile.ZipFile(archive_path, 'r') as archive:
@@ -43,6 +47,12 @@ def safe_extract_zip(
             if info.is_dir():
                 destination.mkdir(parents=True, exist_ok=True)
                 continue
+            try:
+                extracted_bytes += max(0, int(info.file_size))
+            except Exception:
+                extracted_bytes += 0
+            if max_total_uncompressed_bytes is not None and extracted_bytes > int(max_total_uncompressed_bytes):
+                raise RuntimeError('Archive is larger than the allowed extraction limit.')
             destination.parent.mkdir(parents=True, exist_ok=True)
             with archive.open(info, 'r') as src, open(destination, 'wb') as dst:
                 shutil.copyfileobj(src, dst)

@@ -1952,4 +1952,11 @@ def convert_audio_to_midi(audio_file_path: Path | str, custom_name: str | None=N
         except Exception:
             pass
         raise
+    except Exception:
+        try:
+            if midi_file_path.exists():
+                midi_file_path.unlink()
+        except Exception:
+            pass
+        raise
 

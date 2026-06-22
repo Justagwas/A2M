@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -157,12 +158,22 @@ def _read_json(path: Path) -> dict[str, Any] | None:
     return None
 
 def _write_json(path: Path, payload: dict[str, Any]) -> bool:
+    tmp_path = path.with_name(f'{path.name}.tmp')
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, 'w', encoding='utf-8') as handle:
+        with open(tmp_path, 'w', encoding='utf-8') as handle:
             json.dump(payload, handle, indent=2)
+            handle.write('\n')
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
         return True
     except Exception:
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except Exception:
+            pass
         return False
 
 def load_config() -> AppConfig:

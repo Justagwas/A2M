@@ -6,8 +6,8 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 import time
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -221,6 +221,7 @@ class SelfUpdater:
 
     def recover_pending_update(self) -> None:
         try:
+            self._cleanup_legacy_updates_root()
             self._cleanup_old_payloads()
         except Exception:
             return
@@ -340,12 +341,14 @@ class SelfUpdater:
 
     def _create_staging_root(self) -> Path:
         self._runtime_storage_dir.mkdir(parents=True, exist_ok=True)
-        return Path(
-            tempfile.mkdtemp(
-                prefix=_UPDATE_STAGING_PREFIX,
-                dir=str(self._runtime_storage_dir),
-            )
-        )
+        for _attempt in range(100):
+            candidate = self._runtime_storage_dir / f"{_UPDATE_STAGING_PREFIX}{uuid.uuid4().hex}"
+            try:
+                candidate.mkdir(parents=False, exist_ok=False)
+                return candidate
+            except FileExistsError:
+                continue
+        raise RuntimeError("Unable to create update staging folder.")
 
     @staticmethod
     def _emit_progress(
@@ -380,7 +383,7 @@ class SelfUpdater:
         if isinstance(channels_payload, dict):
             normalized_channels: dict[str, object] = {}
             for key, value in channels_payload.items():
-                normalized_key = str(key or "").strip().lower()
+                normalized_key = _normalize_channel(key, default="")
                 if normalized_key not in _VALID_UPDATE_CHANNELS:
                     continue
                 normalized_channels[normalized_key] = value
@@ -403,7 +406,15 @@ class SelfUpdater:
                     return data.get(key)
             return ""
 
-        version_candidate = source.get("version") or data.get("version") or ""
+        version_candidate = (
+            source.get("version")
+            or source.get("latest")
+            or source.get("app_version")
+            or data.get("version")
+            or data.get("latest")
+            or data.get("app_version")
+            or ""
+        )
         if not isinstance(version_candidate, str):
             raise RuntimeError("latest.json did not contain a semantic version string")
         version = _normalize_semver(version_candidate)
@@ -413,11 +424,11 @@ class SelfUpdater:
             allowed_hosts=_UPDATE_ALLOWED_HOSTS,
         ) or self._page_url
         setup_url = _sanitize_url(
-            _pick_value("setup_url"),
+            _pick_value("url-update", "url_update", "setup_url"),
             allowed_hosts=_UPDATE_ALLOWED_HOSTS,
         ) or _sanitize_url(self._default_setup_url, allowed_hosts=_UPDATE_ALLOWED_HOSTS)
-        setup_sha256 = _sanitize_sha256(_pick_value("setup_sha256"))
-        setup_size = _safe_int(_pick_value("setup_size"))
+        setup_sha256 = _sanitize_sha256(_pick_value("setup-sha256", "setup_sha256"))
+        setup_size = _safe_int(_pick_value("setup-size", "setup_size"))
         released = str(_pick_value("released") or "").strip()
         notes = _sanitize_notes(_pick_value("notes"))
         minimum_supported = normalize_version(
@@ -525,6 +536,7 @@ class SelfUpdater:
         destination.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = destination.with_suffix(destination.suffix + ".tmp")
         last_error: Exception | None = None
+        expected_byte_count = _safe_int(expected_size)
         self._emit_progress(progress_callback, 1.0, "Downloading update...")
         for attempt in range(self._request_retries):
             for headers in self._header_profiles:
@@ -535,6 +547,12 @@ class SelfUpdater:
                         final_url = str(response.geturl() or url)
                         if not _url_allowed(final_url, allowed_hosts=_UPDATE_ALLOWED_HOSTS):
                             raise RuntimeError("Update download redirected to an untrusted host.")
+                        declared_size = _safe_int(response.headers.get("Content-Length"))
+                        if expected_byte_count > 0 and declared_size > expected_byte_count:
+                            raise RuntimeError(
+                                f"Downloaded size mismatch. Expected {expected_byte_count}, "
+                                f"server declared {declared_size}."
+                            )
                         downloaded = 0
                         with tmp_path.open("wb") as handle:
                             while True:
@@ -543,9 +561,14 @@ class SelfUpdater:
                                 if not chunk:
                                     break
                                 downloaded += len(chunk)
+                                if expected_byte_count > 0 and downloaded > expected_byte_count:
+                                    raise RuntimeError(
+                                        "Downloaded size exceeded expected size. "
+                                        f"Expected {expected_byte_count}, got more than {downloaded}."
+                                    )
                                 handle.write(chunk)
-                                if expected_size > 0:
-                                    fraction = max(0.0, min(1.0, downloaded / float(expected_size)))
+                                if expected_byte_count > 0:
+                                    fraction = max(0.0, min(1.0, downloaded / float(expected_byte_count)))
                                     self._emit_progress(
                                         progress_callback,
                                         max(1.0, min(92.0, round(fraction * 92.0, 1))),
@@ -553,8 +576,10 @@ class SelfUpdater:
                                     )
                     _ensure_not_stopped(stop_event)
                     actual_size = tmp_path.stat().st_size
-                    if actual_size != expected_size:
-                        raise RuntimeError(f"Downloaded size mismatch. Expected {expected_size}, got {actual_size}.")
+                    if actual_size != expected_byte_count:
+                        raise RuntimeError(
+                            f"Downloaded size mismatch. Expected {expected_byte_count}, got {actual_size}."
+                        )
                     actual_sha256 = self._sha256_file(tmp_path)
                     if actual_sha256.lower() != sha256.lower():
                         raise RuntimeError("SHA256 verification failed for downloaded setup installer.")
@@ -592,7 +617,7 @@ class SelfUpdater:
             raise RuntimeError("Downloaded setup installer was not found.")
         mode_arg = self._installer_mode_arg()
         installer_args = [
-            "/SILENT",
+            "/VERYSILENT",
             "/SP-",
             "/SUPPRESSMSGBOXES",
             "/NORESTART",
@@ -763,8 +788,29 @@ class SelfUpdater:
                 continue
             self._remove_tree(child)
 
-    @staticmethod
-    def _remove_tree(root: Path) -> None:
+    def _cleanup_legacy_updates_root(self) -> None:
+        updates_root = self._runtime_storage_dir / "updates"
+        self._remove_tree(updates_root)
+
+    def _cleanup_target_allowed(self, root: Path) -> bool:
+        try:
+            resolved = Path(root).resolve()
+            storage_root = self._runtime_storage_dir.resolve()
+        except Exception:
+            return False
+        if resolved == storage_root:
+            return False
+        try:
+            resolved.relative_to(storage_root)
+        except ValueError:
+            return False
+        if resolved == storage_root / "updates":
+            return True
+        return resolved.name.startswith(_UPDATE_STAGING_PREFIX)
+
+    def _remove_tree(self, root: Path) -> None:
+        if not self._cleanup_target_allowed(root):
+            return
         try:
             for walk_root, dirs, files in os.walk(root, topdown=False):
                 for file_name in files:

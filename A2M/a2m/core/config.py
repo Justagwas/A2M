@@ -3,7 +3,7 @@ from pathlib import Path
 
 APP_NAME = 'A2M - Audio To MIDI'
 APP_SHORT_NAME = 'A2M'
-APP_VERSION = '2.0.1'
+APP_VERSION = '2.0.2'
 OFFICIAL_PAGE_URL = 'https://www.justagwas.com/projects/a2m/download'
 INNO_SETUP_APP_ID = 'A2MJustagwas'
 CONFIG_FILENAME = 'a2m_config.json'
@@ -27,6 +27,8 @@ MODERN_PEDAL_OFFSET_THRESHOLD_DEFAULT = 0.20
 MODEL_URL = 'https://downloads.justagwas.com/a2m/PianoModel.onnx'
 MODEL_FILENAME = 'PianoModel.onnx'
 MODEL_MIN_BYTES = 20000000
+MODEL_SHA256 = '0be65bb1a4dd0e43d3f1cd5598c42c6fe28088760b7ad65ff9bee8c8903d2012'
+MODEL_DOWNLOAD_MAX_BYTES = 250 * 1024 * 1024
 UPDATE_MANIFEST_URL = 'https://www.justagwas.com/projects/a2m/latest.json'
 UPDATE_GITHUB_LATEST_URL = 'https://github.com/Justagwas/A2M/releases/latest/download/A2MSetup.exe'
 UPDATE_GITHUB_DOWNLOAD_URL = 'https://downloads.justagwas.com/a2m/A2MSetup.exe'
@@ -34,8 +36,16 @@ UPDATE_SOURCEFORGE_RSS_URL = 'https://sourceforge.net/projects/a2m/rss?path=/'
 UPDATE_CHECK_TIMEOUT_SECONDS = 12
 CUDA_DOWNLOAD_URL = 'https://developer.nvidia.com/cuda-12-9-1-download-archive?target_os=Windows&target_arch=x86_64'
 CUDNN_DOWNLOAD_URL = 'https://developer.download.nvidia.com/compute/cudnn/redist/cudnn/windows-x86_64/cudnn-windows-x86_64-9.19.0.56_cuda12-archive.zip'
+CUDNN_DOWNLOAD_SHA256 = '03e1be06d7400f1fdc1ae2a5c82420d49d398cd252450b8d66ba5b9e2f502f08'
+CUDNN_DOWNLOAD_SIZE = 634971654
+CUDNN_DOWNLOAD_MAX_BYTES = 2 * 1024 * 1024 * 1024
 ONNX_CUDA_RUNTIME_PACK_URL = 'https://downloads.justagwas.com/a2m/a2m-onnx-cuda.zip'
+ONNX_CUDA_RUNTIME_PACK_SHA256 = '3ccc201b3632f764123e46509336bd43d7a3d31e73b2f595dfc78353cb819207'
+ONNX_CUDA_RUNTIME_PACK_MAX_BYTES = 512 * 1024 * 1024
 ONNX_DML_RUNTIME_PACK_URL = 'https://downloads.justagwas.com/a2m/a2m-onnx-dml.zip'
+ONNX_DML_RUNTIME_PACK_SHA256 = 'a0051af8b772b816eea4a70c5e5889b48f2c0baa671085a6579571ab4f4cd841'
+ONNX_DML_RUNTIME_PACK_MAX_BYTES = 128 * 1024 * 1024
+ARCHIVE_EXTRACT_MAX_BYTES = 3 * 1024 * 1024 * 1024
 DOWNLOAD_TIMEOUT_SECONDS = 45
 DOWNLOAD_RETRIES_PER_HEADER = 3
 DOWNLOAD_RETRY_BACKOFF_SECONDS = 1.2

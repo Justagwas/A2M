@@ -50,6 +50,13 @@ def _sanitize_notes(value: object) -> list[str]:
     return [str(item or "").strip() for item in value if str(item or "").strip()]
 
 
+def _pick_payload_value(payload: dict[str, object], *keys: str) -> object:
+    for key in keys:
+        if key in payload and payload.get(key) not in (None, ""):
+            return payload.get(key)
+    return ""
+
+
 def _runtime_storage_dir() -> Path:
     root = localappdata_dir() / APP_SHORT_NAME
     root.mkdir(parents=True, exist_ok=True)
@@ -105,9 +112,9 @@ def _build_check_data_from_payload(payload: dict[str, object]) -> UpdateCheckDat
             f"Update payload does not contain a newer version (current={current_version}, latest={latest_version})."
         )
 
-    setup_url = str(payload.get("setup_url") or "").strip()
-    setup_sha256 = str(payload.get("setup_sha256") or "").strip().lower()
-    setup_size = max(0, _safe_int(payload.get("setup_size"), 0))
+    setup_url = str(_pick_payload_value(payload, "url-update", "url_update", "setup_url") or "").strip()
+    setup_sha256 = str(_pick_payload_value(payload, "setup-sha256", "setup_sha256") or "").strip().lower()
+    setup_size = max(0, _safe_int(_pick_payload_value(payload, "setup-size", "setup_size"), 0))
     if not setup_url:
         raise RuntimeError("Update payload does not include a setup installer URL.")
     if not _SHA256_RE.fullmatch(setup_sha256):
