@@ -4,6 +4,8 @@ import os
 import sys
 from pathlib import Path
 
+from .paths import normalized_path_key
+
 _CUDA_PROVIDER_NAMES = (
     'onnxruntime_providers_cuda.dll',
     'onnxruntime_providers_cuda.so',
@@ -42,10 +44,7 @@ def runtime_search_paths(runtime_root: Path) -> list[Path]:
     for candidate in candidates:
         if not candidate.exists():
             continue
-        try:
-            key = str(candidate.resolve()).lower()
-        except Exception:
-            key = str(candidate).lower()
+        key = normalized_path_key(candidate)
         if key in seen:
             continue
         seen.add(key)

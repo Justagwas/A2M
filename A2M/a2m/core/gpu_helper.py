@@ -58,24 +58,25 @@ def _import_ort(runtime_path: str):
     if runtime_root is not None:
         package_dir = runtime_root / 'onnxruntime'
         capi_dir = package_dir / 'capi'
-        if runtime_root.exists() and package_dir.is_dir() and (package_dir / '__init__.py').exists() and capi_dir.is_dir():
-            _prime_runtime_path(runtime_root)
-            for name in [n for n in list(sys.modules) if n == 'onnxruntime' or n.startswith('onnxruntime.')]:
-                sys.modules.pop(name, None)
-            init_file = package_dir / '__init__.py'
-            spec = importlib.util.spec_from_file_location('onnxruntime', str(init_file), submodule_search_locations=[str(package_dir)])
-            if spec is None or spec.loader is None:
-                raise RuntimeError('Failed to load ONNX runtime package spec from runtime path.')
-            module = importlib.util.module_from_spec(spec)
-            sys.modules['onnxruntime'] = module
-            spec.loader.exec_module(module)
-            return module
+        init_file = package_dir / '__init__.py'
+        if not runtime_root.exists():
+            raise RuntimeError('Runtime path does not exist.')
+        if not package_dir.is_dir() or not init_file.is_file() or not capi_dir.is_dir():
+            raise RuntimeError('Runtime package is missing required onnxruntime files.')
+        _prime_runtime_path(runtime_root)
+        for name in [n for n in list(sys.modules) if n == 'onnxruntime' or n.startswith('onnxruntime.')]:
+            sys.modules.pop(name, None)
+        spec = importlib.util.spec_from_file_location('onnxruntime', str(init_file), submodule_search_locations=[str(package_dir)])
+        if spec is None or spec.loader is None:
+            raise RuntimeError('Failed to load ONNX runtime package spec from runtime path.')
+        module = importlib.util.module_from_spec(spec)
+        sys.modules['onnxruntime'] = module
+        spec.loader.exec_module(module)
+        return module
     try:
         import onnxruntime as ort
         return ort
     except Exception as exc:
-        if runtime_str and runtime_root is not None and not runtime_root.exists():
-            raise RuntimeError('Runtime path does not exist.') from exc
         raise RuntimeError('Runtime package is missing required onnxruntime files.') from exc
 
 
@@ -144,19 +145,77 @@ def _create_session(runtime_path: str, provider: str, model_path: str) -> Helper
         if using_dml:
             options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
         options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        session = ort.InferenceSession(str(model), sess_options=options, providers=[ep])
-        active_providers = tuple((str(p) for p in session.get_providers()))
+        model_paths = [model]
+        attributes_model = model.parent / 'attributes.onnx'
+        if model.name.lower() == 'scorer.onnx' and attributes_model.is_file():
+            model_paths.append(attributes_model)
+        sessions = [ort.InferenceSession(str(path), sess_options=options, providers=[ep]) for path in model_paths]
+        active_providers = tuple((str(p) for p in sessions[0].get_providers()))
         active = active_providers[0] if active_providers else 'CPUExecutionProvider'
+        for session, path in zip(sessions[1:], model_paths[1:]):
+            component_active = tuple((str(p) for p in session.get_providers()))
+            if not component_active or component_active[0] != ep:
+                return HelperResult(EXIT_PROVIDER_UNAVAILABLE, _error_payload(REASON_PROVIDER_NOT_EXPOSED, f'{provider.upper()} session started on CPU for {path.name}.', details=f'Active provider: {component_active[0] if component_active else "none"}'))
         if active != ep:
             if ep == 'CUDAExecutionProvider':
-                return HelperResult(EXIT_PROVIDER_LOAD_FAILED, _error_payload(REASON_PROVIDER_LOAD_FAILED, 'CUDA provider failed to initialize and session started on CPU.', details=f'Active provider: {active}'))
+                missing_text = ''
+                try:
+                    from . import cuda_dependency_service
+                    missing = cuda_dependency_service.missing_required_cuda_dlls(runtime_path=runtime_path)
+                    if missing:
+                        requirement = cuda_dependency_service.cuda_requirements_summary(runtime_path)
+                        missing_text = f'Missing: {", ".join(missing)}. Required: {requirement}.'
+                except Exception:
+                    missing_text = ''
+                details = f'{missing_text} Active provider: {active}'.strip()
+                reason = f'CUDA provider failed to initialize. {missing_text}'.strip()
+                return HelperResult(EXIT_PROVIDER_LOAD_FAILED, _error_payload(REASON_PROVIDER_LOAD_FAILED, reason, details=details))
             return HelperResult(EXIT_PROVIDER_UNAVAILABLE, _error_payload(REASON_PROVIDER_NOT_EXPOSED, f'{provider.upper()} session started on CPU.', details=f'Active provider: {active}'))
+        if model.name.lower() == 'scorer.onnx':
+            try:
+                import numpy as np
+
+                probe_features = np.zeros((1, 64, 229, 6), dtype=np.float32)
+                _interval_scores, _skip_scores, context = sessions[0].run(
+                    ['interval_scores', 'skip_scores', 'context'],
+                    {'mel_features': probe_features},
+                )
+                if len(sessions) > 1:
+                    probe_intervals = np.asarray(((2, 0, 1),), dtype=np.int64)
+                    sessions[1].run(
+                        ['velocity_logits', 'refined_logits'],
+                        {
+                            'context': context,
+                            'interval_indices': probe_intervals,
+                        },
+                    )
+                del _interval_scores, _skip_scores, context, probe_features
+            except Exception as exc:
+                provider_name = 'DirectML' if ep == 'DmlExecutionProvider' else 'CUDA'
+                return HelperResult(
+                    EXIT_SESSION_CREATION_FAILED,
+                    _error_payload(
+                        REASON_SESSION_CREATION_FAILED,
+                        f'{provider_name} cannot run the A2M Piano Engine on this system. Use CPU or another GPU provider.',
+                        details=str(exc),
+                    ),
+                )
         return HelperResult(EXIT_OK, _success_payload(provider=provider, provider_ep=ep, active_provider=active, available_providers=active_providers))
     except Exception as exc:
         message = str(exc)
         lower = message.lower()
         if 'loadlibrary' in lower or 'failed to load' in lower or 'provider' in lower:
-            return HelperResult(EXIT_PROVIDER_LOAD_FAILED, _error_payload(REASON_PROVIDER_LOAD_FAILED, f'Failed to load {provider.upper()} provider.', details=message))
+            details = message
+            if ep == 'CUDAExecutionProvider':
+                try:
+                    from . import cuda_dependency_service
+                    missing = cuda_dependency_service.missing_required_cuda_dlls(runtime_path=runtime_path)
+                    if missing:
+                        requirement = cuda_dependency_service.cuda_requirements_summary(runtime_path)
+                        details = f'Missing: {", ".join(missing)}. Required: {requirement}. {message}'
+                except Exception:
+                    pass
+            return HelperResult(EXIT_PROVIDER_LOAD_FAILED, _error_payload(REASON_PROVIDER_LOAD_FAILED, f'Failed to load {provider.upper()} provider.', details=details))
         return HelperResult(EXIT_SESSION_CREATION_FAILED, _error_payload(REASON_SESSION_CREATION_FAILED, f'Failed to create ONNX session on {provider.upper()}.', details=message))
 
 
@@ -165,6 +224,7 @@ def run_gpu_helper(task: str, *, runtime_path: str, provider: str='', model_path
         try:
             from . import cuda_dependency_service
             cuda_dependency_service.ensure_cuda_runtime_bins_in_process_path()
+            cuda_dependency_service.preload_onnxruntime_cuda_dlls()
         except Exception:
             pass
     normalized = str(task or '').strip().lower()

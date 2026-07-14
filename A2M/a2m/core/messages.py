@@ -14,8 +14,6 @@ RUNTIME_LABEL_MISSING = (
     'Reinstall A2M to restore conversion support.'
 )
 
-RUNTIME_LABEL_GPU_VALIDATING = 'GPU runtime detected. Validating acceleration support...'
-
 RUNTIME_LABEL_GPU_NO_PACK = (
     'GPU selected, but no GPU runtime pack is installed.\n'
     'Install CUDA/DirectML runtime pack to enable GPU.'
@@ -26,8 +24,10 @@ RUNTIME_LABEL_GPU_UNAVAILABLE = (
     'A2M is currently using CPU fallback.'
 )
 
-RUNTIME_LABEL_GPU_ACTIVE = 'GPU acceleration is active.'
+RUNTIME_LABEL_CUDA_ACTIVE = 'CUDA acceleration is active.'
 
-RUNTIME_LABEL_CPU_WITH_GPU_PACK = 'CPU mode is active. GPU runtime pack is installed and ready.'
+RUNTIME_LABEL_DML_ACTIVE = 'DirectML acceleration is active.'
+
+RUNTIME_LABEL_CPU_WITH_GPU_PACK = 'CPU mode is active. A GPU runtime pack is installed.'
 
 RUNTIME_LABEL_CPU_NO_GPU_PACK = 'CPU mode is active. GPU runtime pack not installed.'

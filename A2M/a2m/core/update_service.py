@@ -4,7 +4,7 @@ import re
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from threading import Event, Thread
+from threading import Event
 
 from .config import (
     APP_NAME,
@@ -16,7 +16,7 @@ from .config import (
     INNO_SETUP_APP_ID,
     OFFICIAL_PAGE_URL,
     UPDATE_CHECK_TIMEOUT_SECONDS,
-    UPDATE_GITHUB_DOWNLOAD_URL,
+    UPDATE_SETUP_FALLBACK_URL,
     UPDATE_MANIFEST_URL,
 )
 from .paths import app_dir, localappdata_dir
@@ -72,7 +72,7 @@ def _get_updater() -> SelfUpdater:
             app_version=APP_VERSION,
             manifest_url=UPDATE_MANIFEST_URL,
             page_url=OFFICIAL_PAGE_URL,
-            setup_url=UPDATE_GITHUB_DOWNLOAD_URL,
+            setup_url=UPDATE_SETUP_FALLBACK_URL,
             installer_app_id=INNO_SETUP_APP_ID,
             executable_name=executable_name,
             install_dir=app_dir(),
@@ -83,7 +83,7 @@ def _get_updater() -> SelfUpdater:
             retry_backoff_seconds=max(0.0, float(DOWNLOAD_RETRY_BACKOFF_SECONDS)),
             header_profiles=DOWNLOAD_HEADER_PROFILES,
         )
-        Thread(target=_UPDATER.recover_pending_update, daemon=True).start()
+        _UPDATER.recover_pending_update()
     return _UPDATER
 
 

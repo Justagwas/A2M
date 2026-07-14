@@ -6,7 +6,7 @@ from PySide6.QtWidgets import QStyle, QStyleOptionButton, QStyleOptionSlider, QP
 class RoundHandleSliderStyle(QProxyStyle):
 
     def __init__(self, *, handle_color: str, border_color: str, groove_color: str, fill_color: str, handle_size: int=18, groove_height: int=6, parent: QWidget | None=None) -> None:
-        super().__init__(parent.style() if parent is not None else None)
+        super().__init__()
         self._handle_color = QColor(handle_color)
         self._border_color = QColor(border_color)
         self._groove_color = QColor(groove_color)
@@ -108,7 +108,7 @@ class RoundHandleSliderStyle(QProxyStyle):
 class SquareCheckBoxStyle(QProxyStyle):
 
     def __init__(self, *, border_color: str, fill_color: str, check_color: str, size: int=16, radius: int=4, parent: QWidget | None=None) -> None:
-        super().__init__(parent.style() if parent is not None else None)
+        super().__init__()
         self._border_color = QColor(border_color)
         self._fill_color = QColor(fill_color)
         self._check_color = QColor(check_color)

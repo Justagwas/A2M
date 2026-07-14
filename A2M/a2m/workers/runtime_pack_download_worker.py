@@ -18,12 +18,18 @@ class RuntimePackDownloadWorker(WorkerBase):
         self._stop_event.set()
 
     def run(self) -> None:
+        self.reset_progress_eta()
         provider_label = provider_display_name(self.provider)
+        progress_prefix = f'Downloading {provider_label} runtime pack'
+        self.emit_progress(0.0, self.progress_text_with_eta(progress_prefix, 0.0))
         self.logChanged.emit(f'Downloading {provider_label} runtime pack...\nPlease wait...')
 
         def on_progress(percent: float) -> None:
             value = max(0.0, min(float(percent), 100.0))
-            self.emit_progress(value, f'Downloading {provider_label} runtime pack {value:.2f}%')
+            self.emit_progress(
+                value,
+                self.progress_text_with_eta(progress_prefix, value),
+            )
 
         def task():
             return download_and_install_pack(self.provider, progress_callback=on_progress, stop_event=self._stop_event)

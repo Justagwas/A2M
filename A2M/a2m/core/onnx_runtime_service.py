@@ -6,6 +6,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from . import resource_service
 from .runtime_artifacts import provider_artifact_exists as _shared_provider_artifact_exists
 from .runtime_artifacts import pybind_state_exists as _shared_pybind_state_exists
 from .runtime_artifacts import runtime_binary_exists as _shared_runtime_binary_exists
@@ -102,13 +103,12 @@ def _import_runtime_package_from_path(runtime_root: Path):
     spec.loader.exec_module(module)
     return module
 
-def _import_onnxruntime(*, runtime_path: str | Path | None=None, force_reload: bool=False):
+def _import_onnxruntime(*, runtime_path: str | Path | None=None):
     global _ONNXRUNTIME_MODULE, _ONNXRUNTIME_RUNTIME_KEY
     runtime_key = _normalize_runtime_key(runtime_path)
-    if _ONNXRUNTIME_MODULE is not None and runtime_key != _ONNXRUNTIME_RUNTIME_KEY:
-        raise RuntimeError('ONNX runtime backend changed in this session. Please restart A2M and try again.')
-    needs_reload = force_reload or _ONNXRUNTIME_MODULE is None or runtime_key != _ONNXRUNTIME_RUNTIME_KEY
-    if not needs_reload:
+    if _ONNXRUNTIME_MODULE is not None:
+        if runtime_key != _ONNXRUNTIME_RUNTIME_KEY:
+            raise RuntimeError('ONNX runtime backend changed in this session. Please restart A2M and try again.')
         return _ONNXRUNTIME_MODULE
     _clear_onnxruntime_modules()
     _release_dll_dir_handles()
@@ -121,10 +121,15 @@ def _import_onnxruntime(*, runtime_path: str | Path | None=None, force_reload: b
     _ONNXRUNTIME_RUNTIME_KEY = runtime_key
     return _ONNXRUNTIME_MODULE
 
+
+def runtime_backend_state() -> tuple[bool, str]:
+    return (_ONNXRUNTIME_MODULE is not None, str(_ONNXRUNTIME_RUNTIME_KEY or ''))
+
+
 def reset_runtime_cache(*, clear_import_cache: bool=False) -> None:
     global _ONNXRUNTIME_MODULE, _ONNXRUNTIME_RUNTIME_KEY
     _PROBE_CACHE.clear()
-    if clear_import_cache:
+    if clear_import_cache and _ONNXRUNTIME_MODULE is None:
         _clear_onnxruntime_modules()
         _release_dll_dir_handles()
         _remove_runtime_sys_paths()
@@ -192,7 +197,7 @@ def _probe_from_environment() -> RuntimeProbe:
         return RuntimeProbe(runtime_available=False, cuda_available=False, dml_available=False, available_providers=tuple(), error='onnxruntime package not found.')
     if _ONNXRUNTIME_MODULE is None or _ONNXRUNTIME_RUNTIME_KEY:
         try:
-            ort = _import_onnxruntime(runtime_path=None, force_reload=False)
+            ort = _import_onnxruntime(runtime_path=None)
             providers = _providers_from_module(ort, default_cpu=True)
             return _runtime_probe_from_providers(providers)
         except Exception as exc:
@@ -225,7 +230,9 @@ def resolve_provider_order(*, device_preference: str, gpu_provider_preference: s
     if not probe.runtime_available:
         return [_CPU_PROVIDER]
     preference = str(device_preference or 'cpu').strip().lower()
-    gpu_pref = str(gpu_provider_preference or 'auto').strip().lower()
+    gpu_pref = str(gpu_provider_preference or 'dml').strip().lower()
+    if gpu_pref not in {'cuda', 'dml'}:
+        gpu_pref = 'dml'
     providers = set(probe.available_providers)
     if preference != 'gpu':
         return [_CPU_PROVIDER]
@@ -233,10 +240,6 @@ def resolve_provider_order(*, device_preference: str, gpu_provider_preference: s
     if gpu_pref == 'cuda':
         chosen.append(_CUDA_PROVIDER)
     elif gpu_pref == 'dml':
-        chosen.append(_DML_PROVIDER)
-    elif _CUDA_PROVIDER in providers:
-        chosen.append(_CUDA_PROVIDER)
-    elif _DML_PROVIDER in providers:
         chosen.append(_DML_PROVIDER)
     chosen = [p for p in chosen if p in providers]
     if _CPU_PROVIDER in providers or not chosen:
@@ -256,17 +259,26 @@ def create_session(*, model_path: Path | str, device_preference: str, gpu_provid
     if not probe.runtime_available:
         detail = f' ({probe.error})' if probe.error else ''
         raise RuntimeError(f'ONNX Runtime is not available{detail}.')
-    ort = _import_onnxruntime(runtime_path=runtime_path, force_reload=False)
-    provider_order = resolve_provider_order(device_preference=device_preference, gpu_provider_preference=gpu_provider_preference, probe=probe)
     requested_gpu = str(device_preference or '').strip().lower() == 'gpu'
+    requested_cuda = requested_gpu and str(gpu_provider_preference or 'dml').strip().lower() == 'cuda' and _CUDA_PROVIDER in set(probe.available_providers)
+    if requested_cuda:
+        try:
+            from . import cuda_dependency_service
+            cuda_dependency_service.ensure_cuda_runtime_bins_in_process_path()
+            cuda_dependency_service.preload_onnxruntime_cuda_dlls()
+        except Exception:
+            pass
+    ort = _import_onnxruntime(runtime_path=runtime_path)
+    provider_order = resolve_provider_order(device_preference=device_preference, gpu_provider_preference=gpu_provider_preference, probe=probe)
     if requested_gpu and (not provider_order or provider_order[0] == _CPU_PROVIDER):
-        preferred = str(gpu_provider_preference or 'auto').strip().lower()
+        preferred = str(gpu_provider_preference or 'dml').strip().lower()
         if preferred == 'cuda':
             raise RuntimeError('GPU mode selected, but CUDA provider is not available.')
         if preferred == 'dml':
             raise RuntimeError('GPU mode selected, but DirectML provider is not available.')
-        raise RuntimeError('GPU mode selected, but no GPU provider is available (CUDA/DirectML missing).')
+        raise RuntimeError('GPU mode selected, but DirectML provider is not available.')
     options = ort.SessionOptions()
+    options.intra_op_num_threads = resource_service.active_worker_count()
     primary_provider = provider_order[0] if provider_order else _CPU_PROVIDER
     using_dml = primary_provider == _DML_PROVIDER
     options.enable_mem_pattern = False if using_dml else True

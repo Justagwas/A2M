@@ -18,8 +18,12 @@ SPDX-License-Identifier: GPL-3.0-or-later
 from __future__ import annotations
 import ctypes
 import os
+import subprocess
 import sys
-from a2m.core.config import APP_NAME, APP_SHORT_NAME
+import threading
+import time
+from pathlib import Path
+from a2m.core.config import APP_NAME, APP_RESTART_EXIT_CODE, APP_SHORT_NAME, APP_VERSION
 from a2m.core.gpu_helper import run_gpu_helper_cli
 
 MUTEX_NAME = 'A2MMutex'
@@ -66,6 +70,11 @@ def _build_loading_splash():
     from PySide6.QtCore import Qt
     from PySide6.QtGui import QColor, QFont, QGuiApplication, QPainter, QPixmap
     from PySide6.QtWidgets import QSplashScreen
+
+    class LoadingSplash(QSplashScreen):
+        def mousePressEvent(self, event) -> None:
+            event.ignore()
+
     screen = QGuiApplication.primaryScreen()
     dpi_scale = 1.0
     dpr = 1.0
@@ -90,6 +99,7 @@ def _build_loading_splash():
     pixmap.setDevicePixelRatio(dpr)
     pixmap.fill(QColor('#0A0A0B'))
     painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing, False)
     painter.setPen(Qt.NoPen)
     painter.setBrush(QColor('#141416'))
     border_px = max(1, int(round(1 * dpi_scale)))
@@ -113,12 +123,137 @@ def _build_loading_splash():
     painter.setPen(QColor('#B7B7BC'))
     painter.drawText(x_margin, subtitle_y, 'Initializing components...')
     painter.end()
-    splash = QSplashScreen(pixmap, Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint)
+    splash = LoadingSplash(pixmap, Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint)
     message_font = QFont('Segoe UI')
     message_font.setWeight(QFont.DemiBold)
     message_font.setPointSizeF(max(7.0, 9.0 * dpi_scale))
     splash.setFont(message_font)
     return splash
+
+
+def _initialize_startup(app, splash, *, splash_shown_at: float):
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QColor
+    from a2m.core import gpu_runtime_service, resource_service, runtime_inventory_service, runtime_pack_service
+    from a2m.core.config_service import load_config, save_config
+
+    config = load_config()
+    initialize_hardware_defaults = not config.hardware_defaults_initialized
+
+    result: dict[str, object] = {}
+    pending_statuses = [
+        'Checking processor and system memory...'
+        if initialize_hardware_defaults
+        else 'Checking available transcription backends...'
+    ]
+    status_lock = threading.Lock()
+    provider = str(config.gpu_provider_preference or 'dml')
+
+    def add_status(message: str) -> None:
+        with status_lock:
+            pending_statuses.append(str(message))
+
+    def initialize_components() -> None:
+        try:
+            if initialize_hardware_defaults:
+                processor_count = resource_service.logical_processor_count()
+                total_memory_mib = resource_service.total_physical_memory_mib()
+                total_memory_gib = max(1, int(round(total_memory_mib / 1024.0))) if total_memory_mib else 0
+                memory_text = f' and {total_memory_gib} GB of system memory' if total_memory_gib else ''
+                add_status(f'Detected {processor_count} logical processor threads{memory_text}.')
+                add_status('Checking graphics memory...')
+                gpu_memory_mib = gpu_runtime_service.get_gpu_memory_mib(provider)
+                if gpu_memory_mib > 0:
+                    add_status(f'Detected about {max(1, int(round(gpu_memory_mib / 1024.0)))} GB of graphics memory.')
+                else:
+                    add_status('Graphics memory was not reported; using conservative limits.')
+                add_status('Choosing safe CPU and GPU usage defaults...')
+                defaults = resource_service.recommended_hardware_defaults(
+                    processor_count=processor_count,
+                    total_memory_mib=total_memory_mib,
+                    gpu_memory_mib=gpu_memory_mib,
+                )
+                result['defaults'] = defaults
+                cpu_name = resource_service.performance_display_name(defaults.cpu_mode)
+                gpu_name = resource_service.gpu_memory_level_name(
+                    defaults.gpu_batch_size,
+                    defaults.gpu_memory_max_batch,
+                )
+                add_status(f'Selected {cpu_name} CPU usage and {gpu_name} GPU memory usage.')
+            inventory = runtime_inventory_service.inspect_runtime_inventory(
+                configured_provider=config.gpu_provider_preference,
+                configured_runtime_path=(config.gpu_runtime_path if config.gpu_runtime_enabled else ''),
+                status_callback=add_status,
+            )
+            result['runtime_inventory'] = inventory
+            ready_labels = [
+                runtime_pack_service.provider_display_name(name)
+                for name in ('dml', 'cuda')
+                if inventory.provider_status(name).available
+            ]
+            if ready_labels:
+                add_status(f'GPU support ready: {", ".join(ready_labels)}.')
+            elif inventory.cpu_available:
+                add_status('CPU transcription support is ready; optional GPU components were not found.')
+            else:
+                add_status('Transcription runtime support could not be verified.')
+        except Exception as exc:
+            result['error'] = str(exc)
+            add_status('Some system checks were unavailable; A2M will use safe settings.')
+
+    worker = threading.Thread(target=initialize_components, daemon=True)
+    worker.start()
+    next_status_at = splash_shown_at
+    message_color = QColor('#B7B7BC')
+    while True:
+        now = time.monotonic()
+        status_message = ''
+        if now >= next_status_at:
+            with status_lock:
+                if pending_statuses:
+                    status_message = pending_statuses.pop(0)
+        if status_message:
+            splash.showMessage(
+                status_message,
+                Qt.AlignBottom | Qt.AlignHCenter,
+                message_color,
+            )
+            next_status_at = now + 0.38
+        app.processEvents()
+        with status_lock:
+            statuses_waiting = bool(pending_statuses)
+        if (
+            not worker.is_alive()
+            and not statuses_waiting
+            and (now - splash_shown_at) >= 2.0
+        ):
+            break
+        time.sleep(0.02)
+    worker.join()
+
+    if initialize_hardware_defaults:
+        defaults = result.get('defaults')
+        if not isinstance(defaults, resource_service.HardwareDefaults):
+            defaults = resource_service.recommended_hardware_defaults(gpu_memory_mib=0)
+        config.cpu_performance_mode = defaults.cpu_mode
+        config.gpu_performance_mode = defaults.gpu_cpu_mode
+        config.gpu_memory_max_batch = defaults.gpu_memory_max_batch
+        config.gpu_batch_size = defaults.gpu_batch_size
+        config.hardware_defaults_initialized = True
+        splash.showMessage(
+            'Saving first-time settings...',
+            Qt.AlignBottom | Qt.AlignHCenter,
+            message_color,
+        )
+        app.processEvents()
+        save_config(config)
+    splash.showMessage(
+        'Setup complete. Loading A2M...',
+        Qt.AlignBottom | Qt.AlignHCenter,
+        message_color,
+    )
+    app.processEvents()
+    return result.get('runtime_inventory')
 
 
 def _run_gui() -> int:
@@ -128,15 +263,8 @@ def _run_gui() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName(APP_SHORT_NAME)
     app.setApplicationDisplayName(APP_NAME)
+    app.setApplicationVersion(APP_VERSION)
     app.setOrganizationName(APP_SHORT_NAME)
-    guard = SingleInstanceGuard(MUTEX_NAME)
-    if not guard.acquire():
-        QMessageBox.information(
-            None,
-            APP_NAME,
-            f'{APP_NAME} is already running.',
-        )
-        return 0
     splash = _build_loading_splash()
     splash.show()
     splash.showMessage(
@@ -145,7 +273,18 @@ def _run_gui() -> int:
         QColor('#B7B7BC'),
     )
     app.processEvents()
+    splash_shown_at = time.monotonic()
+    guard = SingleInstanceGuard(MUTEX_NAME)
+    if not guard.acquire():
+        splash.close()
+        QMessageBox.information(
+            None,
+            APP_NAME,
+            f'{APP_NAME} is already running.',
+        )
+        return 0
     try:
+        runtime_inventory = _initialize_startup(app, splash, splash_shown_at=splash_shown_at)
         from a2m.app_controller import AppController
         splash.showMessage(
             'Loading main window...',
@@ -153,7 +292,12 @@ def _run_gui() -> int:
             QColor('#B7B7BC'),
         )
         app.processEvents()
-        controller = AppController(app)
+        try:
+            controller = AppController(app, startup_runtime_inventory=runtime_inventory)
+        except RuntimeError as exc:
+            splash.close()
+            QMessageBox.critical(None, APP_NAME, str(exc))
+            return 1
         controller.run()
         splash.finish(controller.window)
         return app.exec()
@@ -165,9 +309,33 @@ def _run_gui() -> int:
 def main() -> int:
     if '--gpu-helper' in sys.argv:
         return int(run_gpu_helper_cli(sys.argv[1:]))
-    return _run_gui()
+    exit_code = _run_gui()
+    if exit_code != APP_RESTART_EXIT_CODE:
+        return int(exit_code)
+    if getattr(sys, 'frozen', False):
+        launch_args = [str(sys.executable), *sys.argv[1:]]
+        working_dir = str(Path(sys.executable).resolve().parent)
+    else:
+        script_path = str(Path(sys.argv[0]).resolve())
+        launch_args = [str(sys.executable), script_path, *sys.argv[1:]]
+        working_dir = str(Path(script_path).resolve().parent)
+    try:
+        subprocess.Popen(launch_args, cwd=working_dir)
+    except Exception as exc:
+        print(f'[A2M] Restart failed: {exc}', file=sys.stderr)
+        if os.name == 'nt':
+            try:
+                ctypes.windll.user32.MessageBoxW(
+                    None,
+                    f'A2M could not restart automatically.\n\n{exc}',
+                    APP_NAME,
+                    0x10,
+                )
+            except Exception:
+                pass
+        return 1
+    return 0
 
 
 if __name__ == '__main__':
     raise SystemExit(main())
-

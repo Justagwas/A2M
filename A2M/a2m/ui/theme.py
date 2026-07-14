@@ -219,6 +219,14 @@ QPushButton#modeButton:checked {{
     color: {theme.text_primary};
     background: {theme.accent};
 }}
+QPushButton#modeButton:disabled {{
+    color: {theme.disabled_fg};
+    background: transparent;
+}}
+QPushButton#modeButton:checked:disabled {{
+    color: {theme.disabled_fg};
+    background: {theme.disabled_bg};
+}}
 QTextEdit#consoleOutput, QPlainTextEdit#consoleOutput {{
     background: {theme.app_bg};
     color: {theme.text_primary};
@@ -248,7 +256,6 @@ QCheckBox {{
     spacing: {checkbox_spacing}px;
 }}
 """
-
 
 
 

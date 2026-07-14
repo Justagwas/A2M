@@ -19,20 +19,13 @@ class MainWindow(QMainWindow):
     officialPageRequested = Signal()
     themeModeChanged = Signal(str)
     devicePreferenceChanged = Signal(str)
-    conversionMethodChanged = Signal(str)
-    modernAdaptiveThresholdsChanged = Signal(bool)
-    modernInputNormalizationChanged = Signal(bool)
-    modernSmartOverlapStitchingChanged = Signal(bool)
-    modernAutoCalibrationChanged = Signal(bool)
-    modernOnsetThresholdChanged = Signal(float)
-    modernOffsetThresholdChanged = Signal(float)
-    modernFrameThresholdChanged = Signal(float)
-    modernPedalOffsetThresholdChanged = Signal(float)
-    modernCleanupScaleChanged = Signal(float)
-    modernPedalClusterScaleChanged = Signal(float)
-    modernAlignmentGateScaleChanged = Signal(float)
     gpuProviderPreferenceChanged = Signal(str)
-    gpuBatchSizeChanged = Signal(int)
+    enginePedalsEnabledChanged = Signal(bool)
+    engineVelocityModeChanged = Signal(str)
+    engineUniformVelocityChanged = Signal(int)
+    transcriptionPerformanceModeChanged = Signal(str, str)
+    gpuMemoryUsageChanged = Signal(int)
+    resetEngineSettingsRequested = Signal()
     uiScalePercentChanged = Signal(int)
     downloadLocationChanged = Signal(str)
     autoCheckUpdatesChanged = Signal(bool)
@@ -48,14 +41,14 @@ class MainWindow(QMainWindow):
         self._file_name_full = 'No file chosen'
         self._file_path_full = ''
         self._file_path_placeholder = 'No file path selected'
-        self._model_status_full = 'Transcription model: checking...'
+        self._model_status_full = 'Transcription Model: checking...'
         self._settings_visible = False
         self._window_pinned = False
         self._render_scale = 1.0
         self._base_width = 608
         self._base_height = 400
-        self._base_settings_width = 284
-        self._settings_min_width = 260
+        self._base_settings_width = 312
+        self._settings_min_width = 280
         self._settings_target_width = self._base_settings_width
         self._settings_animation_expected_end_width: int | None = None
         self.setWindowTitle(APP_NAME)
@@ -236,7 +229,7 @@ class MainWindow(QMainWindow):
         self.settings_toggle_btn.clicked.connect(lambda: self.set_settings_visible(not self._settings_visible))
         footer_layout.addWidget(self.settings_toggle_btn, 0, Qt.AlignLeft)
         footer_layout.addStretch(1)
-        self.downloads_btn = QPushButton('Open downloads folder', footer)
+        self.downloads_btn = QPushButton('Open output folder', footer)
         self.downloads_btn.setObjectName('footerLink')
         self.downloads_btn.setFlat(True)
         self.downloads_btn.clicked.connect(self.openDownloadsRequested.emit)
@@ -253,20 +246,13 @@ class MainWindow(QMainWindow):
 
     def _connect_settings_signals(self) -> None:
         self.settings_panel.devicePreferenceChanged.connect(self.devicePreferenceChanged.emit)
-        self.settings_panel.conversionMethodChanged.connect(self.conversionMethodChanged.emit)
-        self.settings_panel.modernAdaptiveThresholdsChanged.connect(self.modernAdaptiveThresholdsChanged.emit)
-        self.settings_panel.modernInputNormalizationChanged.connect(self.modernInputNormalizationChanged.emit)
-        self.settings_panel.modernSmartOverlapStitchingChanged.connect(self.modernSmartOverlapStitchingChanged.emit)
-        self.settings_panel.modernAutoCalibrationChanged.connect(self.modernAutoCalibrationChanged.emit)
-        self.settings_panel.modernOnsetThresholdChanged.connect(self.modernOnsetThresholdChanged.emit)
-        self.settings_panel.modernOffsetThresholdChanged.connect(self.modernOffsetThresholdChanged.emit)
-        self.settings_panel.modernFrameThresholdChanged.connect(self.modernFrameThresholdChanged.emit)
-        self.settings_panel.modernPedalOffsetThresholdChanged.connect(self.modernPedalOffsetThresholdChanged.emit)
-        self.settings_panel.modernCleanupScaleChanged.connect(self.modernCleanupScaleChanged.emit)
-        self.settings_panel.modernPedalClusterScaleChanged.connect(self.modernPedalClusterScaleChanged.emit)
-        self.settings_panel.modernAlignmentGateScaleChanged.connect(self.modernAlignmentGateScaleChanged.emit)
         self.settings_panel.gpuProviderPreferenceChanged.connect(self.gpuProviderPreferenceChanged.emit)
-        self.settings_panel.gpuBatchSizeChanged.connect(self.gpuBatchSizeChanged.emit)
+        self.settings_panel.enginePedalsEnabledChanged.connect(self.enginePedalsEnabledChanged.emit)
+        self.settings_panel.engineVelocityModeChanged.connect(self.engineVelocityModeChanged.emit)
+        self.settings_panel.engineUniformVelocityChanged.connect(self.engineUniformVelocityChanged.emit)
+        self.settings_panel.transcriptionPerformanceModeChanged.connect(self.transcriptionPerformanceModeChanged.emit)
+        self.settings_panel.gpuMemoryUsageChanged.connect(self.gpuMemoryUsageChanged.emit)
+        self.settings_panel.resetEngineSettingsRequested.connect(self.resetEngineSettingsRequested.emit)
         self.settings_panel.uiScalePercentChanged.connect(self.uiScalePercentChanged.emit)
         self.settings_panel.downloadLocationChanged.connect(self.downloadLocationChanged.emit)
         self.settings_panel.autoCheckUpdatesChanged.connect(self.autoCheckUpdatesChanged.emit)
@@ -685,9 +671,9 @@ class MainWindow(QMainWindow):
 
     def set_model_status(self, *, ready: bool) -> None:
         if ready:
-            self._model_status_full = 'Transcription model: Ready'
+            self._model_status_full = 'Transcription Model: Ready'
         else:
-            self._model_status_full = 'Transcription model: REQUIRED (download once)'
+            self._model_status_full = 'Transcription Model: REQUIRED (download once)'
         self.model_status_label.setText(self._model_status_full)
         self._refresh_file_labels()
         self.model_status_label.update()
@@ -712,9 +698,24 @@ class MainWindow(QMainWindow):
         self.stop_btn.setEnabled(stop_enabled)
         for button in (self.file_choose_btn, self.convert_btn, self.stop_btn):
             self._set_widget_cursor(button)
+        self.settings_panel.set_device_controls_enabled(file_enabled)
+        self.settings_panel.set_engine_controls_enabled(file_enabled)
 
-    def set_settings_values(self, *, device_preference: str, conversion_method: str, modern_adaptive_thresholds_enabled: bool, modern_input_normalization_enabled: bool, modern_smart_overlap_stitching_enabled: bool, modern_auto_calibration_enabled: bool, modern_cleanup_scale: float, modern_pedal_cluster_scale: float, modern_alignment_gate_scale: float, modern_manual_onset_threshold: float, modern_manual_offset_threshold: float, modern_manual_frame_threshold: float, modern_manual_pedal_offset_threshold: float, gpu_provider_preference: str, gpu_batch_size: int, ui_scale_percent: int, download_location: str, auto_check_updates: bool) -> None:
-        self.settings_panel.set_values(device_preference=device_preference, conversion_method=conversion_method, modern_adaptive_thresholds_enabled=modern_adaptive_thresholds_enabled, modern_input_normalization_enabled=modern_input_normalization_enabled, modern_smart_overlap_stitching_enabled=modern_smart_overlap_stitching_enabled, modern_auto_calibration_enabled=modern_auto_calibration_enabled, modern_cleanup_scale=modern_cleanup_scale, modern_pedal_cluster_scale=modern_pedal_cluster_scale, modern_alignment_gate_scale=modern_alignment_gate_scale, modern_manual_onset_threshold=modern_manual_onset_threshold, modern_manual_offset_threshold=modern_manual_offset_threshold, modern_manual_frame_threshold=modern_manual_frame_threshold, modern_manual_pedal_offset_threshold=modern_manual_pedal_offset_threshold, gpu_provider_preference=gpu_provider_preference, gpu_batch_size=gpu_batch_size, ui_scale_percent=ui_scale_percent, download_location=download_location, auto_check_updates=auto_check_updates)
+    def set_settings_values(self, *, device_preference: str, gpu_provider_preference: str, engine_pedals_enabled: bool, engine_velocity_mode: str, engine_uniform_velocity: int, cpu_performance_mode: str, gpu_performance_mode: str, gpu_batch_size: int, gpu_memory_max_batch: int, ui_scale_percent: int, download_location: str, auto_check_updates: bool) -> None:
+        self.settings_panel.set_values(
+            device_preference=device_preference,
+            gpu_provider_preference=gpu_provider_preference,
+            engine_pedals_enabled=engine_pedals_enabled,
+            engine_velocity_mode=engine_velocity_mode,
+            engine_uniform_velocity=engine_uniform_velocity,
+            cpu_performance_mode=cpu_performance_mode,
+            gpu_performance_mode=gpu_performance_mode,
+            gpu_batch_size=gpu_batch_size,
+            gpu_memory_max_batch=gpu_memory_max_batch,
+            ui_scale_percent=ui_scale_percent,
+            download_location=download_location,
+            auto_check_updates=auto_check_updates,
+        )
 
     def set_ui_scale_percent(self, value: int) -> None:
         normalized = self._normalize_ui_scale_percent(value)
@@ -744,7 +745,3 @@ class MainWindow(QMainWindow):
         else:
             self._set_settings_container_width(end_width)
         self._refresh_file_labels()
-
-    def is_settings_visible(self) -> bool:
-        return self._settings_visible
-

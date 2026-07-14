@@ -8,15 +8,17 @@ from .onnx_runtime_service import RuntimeProbe, create_session as create_onnx_se
 from .onnx_runtime_service import probe_runtime_path as probe_runtime_path_only
 from .onnx_runtime_service import probe_runtime_support as probe_onnx_runtime_support
 from .onnx_runtime_service import provider_display_name, reset_runtime_cache as reset_onnx_cache
-from .paths import app_dir, bundle_dir
+from .onnx_runtime_service import runtime_backend_state as get_onnx_runtime_backend_state
+from .paths import app_dir, bundle_dir, normalized_path_key
 from .runtime_artifacts import runtime_root_from_path as _shared_runtime_root_from_path
 from .runtime_artifacts import runtime_root_has_provider as _shared_runtime_root_has_provider
 from .runtime_artifacts import runtime_root_looks_valid as _shared_runtime_root_looks_valid
 _DEVICE_PREFERENCE = 'cpu'
-_GPU_BATCH_SIZE = 4
-_GPU_PROVIDER_PREFERENCE = 'auto'
+_GPU_BATCH_SIZE = 1
+_GPU_PROVIDER_PREFERENCE = 'dml'
 _GPU_RUNTIME_ENABLED = False
 _GPU_RUNTIME_PATH = ''
+_GPU_RUNTIME_RESTART_REQUIRED = False
 
 
 def _runtime_root_from_path(path: Path) -> Path:
@@ -28,10 +30,7 @@ def _runtime_root_looks_valid(path: Path) -> bool:
 
 
 def _candidate_key(path: Path) -> str:
-    try:
-        return str(path.resolve()).lower()
-    except Exception:
-        return str(path).lower()
+    return normalized_path_key(path)
 
 
 def _packaged_runtime_candidates() -> list[Path]:
@@ -61,8 +60,8 @@ def _packaged_runtime_candidates() -> list[Path]:
     return unique
 
 
-def _runtime_root_has_cuda_provider(path: Path) -> bool:
-    return _shared_runtime_root_has_provider(path, 'cuda')
+def _runtime_root_has_gpu_provider(path: Path) -> bool:
+    return _shared_runtime_root_has_provider(path, 'cuda') or _shared_runtime_root_has_provider(path, 'dml')
 
 
 def get_packaged_runtime_root() -> str:
@@ -86,7 +85,7 @@ def is_gpu_capable_build() -> bool:
     runtime_root = get_packaged_runtime_root()
     if not runtime_root:
         return False
-    return _runtime_root_has_cuda_provider(Path(runtime_root))
+    return _runtime_root_has_gpu_provider(Path(runtime_root))
 
 
 def get_effective_runtime_root_for_gpu_checks() -> str:
@@ -127,10 +126,10 @@ def _normalize_device_preference(preference: str | None) -> str:
 
 
 def _normalize_gpu_provider_preference(preference: str | None) -> str:
-    normalized = str(preference or 'auto').strip().lower()
-    if normalized in {'auto', 'cuda', 'dml'}:
+    normalized = str(preference or 'dml').strip().lower()
+    if normalized in {'cuda', 'dml'}:
         return normalized
-    return 'auto'
+    return 'dml'
 
 
 def set_device_preference(preference: str | None) -> str:
@@ -173,13 +172,18 @@ def get_gpu_provider_preference() -> str:
 
 
 def set_gpu_runtime(enabled: bool | None, runtime_path: str | Path | None) -> tuple[bool, str]:
-    global _GPU_RUNTIME_ENABLED, _GPU_RUNTIME_PATH
+    global _GPU_RUNTIME_ENABLED, _GPU_RUNTIME_PATH, _GPU_RUNTIME_RESTART_REQUIRED
     selected_path = ''
     requested = bool(enabled)
     if requested:
         selected_path = resolve_working_runtime_path(runtime_path)
         requested = bool(selected_path)
     requested_path = selected_path if requested else ''
+    backend_loaded, loaded_runtime_path = get_onnx_runtime_backend_state()
+    _GPU_RUNTIME_RESTART_REQUIRED = bool(
+        backend_loaded
+        and _candidate_key(Path(loaded_runtime_path or '.')) != _candidate_key(Path(requested_path or '.'))
+    )
     if bool(_GPU_RUNTIME_ENABLED) == bool(requested) and str(_GPU_RUNTIME_PATH or '').strip() == str(requested_path or '').strip():
         return (_GPU_RUNTIME_ENABLED, _GPU_RUNTIME_PATH)
     _GPU_RUNTIME_ENABLED = requested
@@ -188,7 +192,7 @@ def set_gpu_runtime(enabled: bool | None, runtime_path: str | Path | None) -> tu
         os.environ['A2M_GPU_RUNTIME_PATH'] = _GPU_RUNTIME_PATH
     else:
         os.environ.pop('A2M_GPU_RUNTIME_PATH', None)
-    reset_runtime_cache(clear_import_cache=True)
+    reset_runtime_cache(clear_import_cache=not backend_loaded)
     return (_GPU_RUNTIME_ENABLED, _GPU_RUNTIME_PATH)
 
 
@@ -198,6 +202,10 @@ def is_gpu_runtime_enabled() -> bool:
 
 def get_gpu_runtime_path() -> str:
     return _GPU_RUNTIME_PATH
+
+
+def is_runtime_restart_required() -> bool:
+    return bool(_GPU_RUNTIME_RESTART_REQUIRED)
 
 
 def _runtime_path_for_probe() -> str | None:
@@ -236,4 +244,3 @@ def create_session(model_path: Path | str, *, force_refresh: bool=False, device_
 
 def reset_runtime_cache(*, clear_import_cache: bool=True) -> None:
     reset_onnx_cache(clear_import_cache=clear_import_cache)
-

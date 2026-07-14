@@ -15,7 +15,7 @@ Open a bug issue and include:
 - What happened
 - Expected behavior
 - Reproduction steps
-- App version (`v2.x.x`)
+- App version (`v3.x.x`)
 - OS version
 - Screenshots or logs (if available)
 

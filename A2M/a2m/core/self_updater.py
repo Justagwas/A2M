@@ -20,7 +20,8 @@ try:
 except Exception:  # pragma: no cover - non-Windows
     winreg = None  # type: ignore[assignment]
 
-_SEMVER_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)")
+_SEMVER_RE = re.compile(r"v?(\d+)\.(\d+)\.(\d+)", re.IGNORECASE)
+_MAX_TEXT_RESPONSE_BYTES = 2 * 1024 * 1024
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _MANIFEST_ALLOWED_HOSTS = {
     "justagwas.com",
@@ -41,6 +42,10 @@ _VALID_UPDATE_CHANNELS = {"stable", "nightly"}
 _UPDATE_STAGING_PREFIX = "a2m-update-"
 
 
+class _UpdateValidationError(RuntimeError):
+    """A non-transient update payload failure that should not be retried."""
+
+
 def normalize_version(version_text: str) -> str:
     text = str(version_text or "").strip()
     if text.lower().startswith("v"):
@@ -49,7 +54,7 @@ def normalize_version(version_text: str) -> str:
 
 
 def parse_semver(value: str) -> tuple[int, int, int] | None:
-    match = _SEMVER_RE.search(str(value or ""))
+    match = _SEMVER_RE.fullmatch(str(value or "").strip())
     if not match:
         return None
     return int(match.group(1)), int(match.group(2)), int(match.group(3))
@@ -221,7 +226,6 @@ class SelfUpdater:
 
     def recover_pending_update(self) -> None:
         try:
-            self._cleanup_legacy_updates_root()
             self._cleanup_old_payloads()
         except Exception:
             return
@@ -287,6 +291,8 @@ class SelfUpdater:
             raise RuntimeError("This version is below the minimum supported auto-update version.")
         if not check_data.setup_url:
             raise RuntimeError("No setup installer URL was provided in latest.json.")
+        if not _url_allowed(check_data.setup_url, allowed_hosts=_UPDATE_ALLOWED_HOSTS):
+            raise RuntimeError("Setup installer URL is missing or untrusted.")
         if not check_data.setup_sha256 or check_data.setup_size <= 0:
             raise RuntimeError("Setup installer metadata is incomplete in latest.json.")
 
@@ -509,7 +515,13 @@ class SelfUpdater:
                         final_url = str(response.geturl() or url)
                         if not _url_allowed(final_url, allowed_hosts=trusted_hosts):
                             raise RuntimeError("Update endpoint redirected to an untrusted host.")
-                        body = response.read().decode("utf-8-sig", errors="replace")
+                        content_length = response.headers.get("Content-Length")
+                        if content_length is not None and int(content_length) > _MAX_TEXT_RESPONSE_BYTES:
+                            raise RuntimeError("Update response is larger than the allowed limit.")
+                        raw_body = response.read(_MAX_TEXT_RESPONSE_BYTES + 1)
+                        if len(raw_body) > _MAX_TEXT_RESPONSE_BYTES:
+                            raise RuntimeError("Update response is larger than the allowed limit.")
+                        body = raw_body.decode("utf-8-sig", errors="replace")
                     _ensure_not_stopped(stop_event)
                     return body, final_url
                 except InterruptedError:
@@ -549,7 +561,7 @@ class SelfUpdater:
                             raise RuntimeError("Update download redirected to an untrusted host.")
                         declared_size = _safe_int(response.headers.get("Content-Length"))
                         if expected_byte_count > 0 and declared_size > expected_byte_count:
-                            raise RuntimeError(
+                            raise _UpdateValidationError(
                                 f"Downloaded size mismatch. Expected {expected_byte_count}, "
                                 f"server declared {declared_size}."
                             )
@@ -562,7 +574,7 @@ class SelfUpdater:
                                     break
                                 downloaded += len(chunk)
                                 if expected_byte_count > 0 and downloaded > expected_byte_count:
-                                    raise RuntimeError(
+                                    raise _UpdateValidationError(
                                         "Downloaded size exceeded expected size. "
                                         f"Expected {expected_byte_count}, got more than {downloaded}."
                                     )
@@ -577,12 +589,12 @@ class SelfUpdater:
                     _ensure_not_stopped(stop_event)
                     actual_size = tmp_path.stat().st_size
                     if actual_size != expected_byte_count:
-                        raise RuntimeError(
+                        raise _UpdateValidationError(
                             f"Downloaded size mismatch. Expected {expected_byte_count}, got {actual_size}."
                         )
                     actual_sha256 = self._sha256_file(tmp_path)
                     if actual_sha256.lower() != sha256.lower():
-                        raise RuntimeError("SHA256 verification failed for downloaded setup installer.")
+                        raise _UpdateValidationError("SHA256 verification failed for downloaded setup installer.")
                     os.replace(tmp_path, destination)
                     self._emit_progress(progress_callback, 94.0, "Download complete.")
                     return
@@ -596,6 +608,16 @@ class SelfUpdater:
                     except Exception:
                         pass
                     raise
+                except _UpdateValidationError as exc:
+                    try:
+                        tmp_path.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                    try:
+                        destination.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                    raise RuntimeError(f"Update download failed: {exc}") from exc
                 except Exception as exc:
                     last_error = exc
                     try:
@@ -788,10 +810,6 @@ class SelfUpdater:
                 continue
             self._remove_tree(child)
 
-    def _cleanup_legacy_updates_root(self) -> None:
-        updates_root = self._runtime_storage_dir / "updates"
-        self._remove_tree(updates_root)
-
     def _cleanup_target_allowed(self, root: Path) -> bool:
         try:
             resolved = Path(root).resolve()
@@ -804,8 +822,6 @@ class SelfUpdater:
             resolved.relative_to(storage_root)
         except ValueError:
             return False
-        if resolved == storage_root / "updates":
-            return True
         return resolved.name.startswith(_UPDATE_STAGING_PREFIX)
 
     def _remove_tree(self, root: Path) -> None:

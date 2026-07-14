@@ -1,6 +1,5 @@
 from __future__ import annotations
 import os
-import subprocess
 import sys
 import threading
 import webbrowser
@@ -8,18 +7,14 @@ from pathlib import Path
 from PySide6.QtCore import QByteArray, QEvent, QObject, QThread, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QCheckBox, QDialog, QFileDialog, QHBoxLayout, QLabel, QMessageBox, QProgressDialog, QPushButton, QVBoxLayout, QWidget
-from a2m.core import conversion_service, cuda_dependency_service, gpu_runtime_service, model_service, runtime_pack_service, runtime_service
-from a2m.core.config_service import AppConfig, default_config, load_config, normalize_conversion_method, save_config
-from a2m.core.config import CUDNN_DOWNLOAD_URL, CUDA_DOWNLOAD_URL, OFFICIAL_PAGE_URL, SUPPORTED_AUDIO_FILTER
-from a2m.core.config import UPDATE_CHECK_TIMEOUT_SECONDS
-from a2m.core.config import MODERN_FRAME_THRESHOLD_DEFAULT, MODERN_FRAME_THRESHOLD_MAX, MODERN_FRAME_THRESHOLD_MIN
-from a2m.core.config import MODERN_OFFSET_THRESHOLD_DEFAULT, MODERN_OFFSET_THRESHOLD_MAX, MODERN_OFFSET_THRESHOLD_MIN
-from a2m.core.config import MODERN_ONSET_THRESHOLD_DEFAULT, MODERN_ONSET_THRESHOLD_MAX, MODERN_ONSET_THRESHOLD_MIN
-from a2m.core.config import MODERN_PEDAL_OFFSET_THRESHOLD_DEFAULT, MODERN_PEDAL_OFFSET_THRESHOLD_MAX, MODERN_PEDAL_OFFSET_THRESHOLD_MIN
+from a2m.core import conversion_service, cuda_dependency_service, gpu_runtime_service, model_service, resource_service, runtime_pack_service, runtime_service
+from a2m.core.config_service import AppConfig, default_config, load_config, save_config
+from a2m.core.config import APP_RESTART_EXIT_CODE, CUDA_DOWNLOAD_URL, ENGINE_UNIFORM_VELOCITY_DEFAULT, ENGINE_UNIFORM_VELOCITY_MAX, ENGINE_UNIFORM_VELOCITY_MIN, OFFICIAL_PAGE_URL, SUPPORTED_AUDIO_FILTER
 from a2m.core.gpu_helper import REASON_PROVIDER_LOAD_FAILED, REASON_PROVIDER_NOT_EXPOSED, REASON_SESSION_CREATION_FAILED
 from a2m.core.gpu_runtime_manager import GpuRuntimeManager, RuntimeDecision
+from a2m.core.runtime_inventory_service import ProviderRuntimeStatus, RuntimeInventory
 from a2m.core.messages import RUNTIME_INFO_CHECKING, RUNTIME_WARNING_MISSING
-from a2m.core.paths import icon_path
+from a2m.core.paths import icon_path, normalized_path_key
 from a2m.controller.dialog_coordinator import DialogCoordinator
 from a2m.ui.interaction import is_pointer_control as is_pointer_control_widget
 from a2m.ui.interaction import sync_pointer_cursor as sync_pointer_cursor_widget
@@ -42,23 +37,51 @@ class AppController(QObject):
         'Validating ONNX GPU support...\nPlease wait...',
     }
 
-    def __init__(self, app) -> None:
+    def __init__(self, app, *, startup_runtime_inventory: object=None) -> None:
         super().__init__()
         self.app = app
+        self.gpu_runtime_manager = GpuRuntimeManager()
+        self._runtime_inventory = (
+            startup_runtime_inventory
+            if isinstance(startup_runtime_inventory, RuntimeInventory)
+            else RuntimeInventory()
+        )
+        self._startup_inventory_complete = isinstance(startup_runtime_inventory, RuntimeInventory)
+        self._runtime_probe_cache: dict[str, dict[str, object]] = dict(self._runtime_inventory.probes)
         try:
             cuda_dependency_service.ensure_cuda_runtime_bins_in_process_path()
         except Exception as exc:
             print(f'[A2M] Warning: CUDA dependency bootstrap failed: {exc}', file=sys.stderr)
         self.config: AppConfig = load_config()
         startup_provider_before = str(self.config.gpu_provider_preference or '').strip().lower()
+        startup_device_before = str(self.config.device_preference or '').strip().lower()
         startup_runtime_before = (bool(self.config.gpu_runtime_enabled), str(self.config.gpu_runtime_path or '').strip())
+        startup_cpu_performance_before = str(self.config.cpu_performance_mode or '').strip().lower()
+        startup_gpu_performance_before = str(self.config.gpu_performance_mode or '').strip().lower()
+        if not self.config.hardware_defaults_initialized:
+            self.config.cpu_performance_mode = resource_service.recommended_performance_mode()
+        self.config.cpu_performance_mode = resource_service.normalize_performance_mode(self.config.cpu_performance_mode)
+        self.config.gpu_performance_mode = resource_service.normalize_performance_mode(self.config.gpu_performance_mode)
         self.config.device_preference = runtime_service.set_device_preference(self.config.device_preference)
-        self.config.gpu_batch_size = runtime_service.set_gpu_batch_size(self.config.gpu_batch_size)
+        self._activate_performance_mode_for_device()
         self.config.gpu_provider_preference = runtime_service.set_gpu_provider_preference(self.config.gpu_provider_preference)
         self.config.gpu_runtime_enabled, self.config.gpu_runtime_path = runtime_service.set_gpu_runtime(self.config.gpu_runtime_enabled, self.config.gpu_runtime_path)
         self._sync_runtime_pack_selection(prefer_existing_config=True)
+        if self.config.device_preference == 'gpu' and not self.config.gpu_runtime_enabled:
+            packaged_provider = gpu_runtime_service.detect_runtime_provider(
+                runtime_service.get_packaged_runtime_root()
+            )
+            if packaged_provider != self.config.gpu_provider_preference:
+                self.config.device_preference = runtime_service.set_device_preference('cpu')
+                self._activate_performance_mode_for_device('cpu')
         startup_runtime_after = (bool(self.config.gpu_runtime_enabled), str(self.config.gpu_runtime_path or '').strip())
-        self._config_changed_during_startup = (startup_provider_before != self.config.gpu_provider_preference) or (startup_runtime_before != startup_runtime_after)
+        self._config_changed_during_startup = (
+            (startup_provider_before != self.config.gpu_provider_preference)
+            or (startup_device_before != self.config.device_preference)
+            or (startup_runtime_before != startup_runtime_after)
+            or (startup_cpu_performance_before != self.config.cpu_performance_mode)
+            or (startup_gpu_performance_before != self.config.gpu_performance_mode)
+        )
         self.config.download_location = str(conversion_service.set_output_midi_dir(self.config.download_location))
         self.selected_file: Path | None = None
         self.model_download_in_progress = False
@@ -73,8 +96,11 @@ class AppController(QObject):
         self.close_after_update_operation = False
         self._restart_after_gpu_setup = False
         self._restart_prompt_pending = False
-        self._runtime_checking = True
+        self._update_installer_handoff_in_progress = False
+        self._runtime_checking = not self._startup_inventory_complete
         self._runtime_probe_token = 0
+        self._runtime_probe_target_path = ''
+        self._runtime_probed_path = ''
         self._runtime_available = False
         self._cuda_available = False
         self._dml_available = False
@@ -82,9 +108,16 @@ class AppController(QObject):
         self._gpu_validation_token = 0
         self._gpu_validation_in_progress = False
         self._gpu_validation_cache: dict[tuple[str, str, str], RuntimeDecision] = {}
+        self._seed_startup_gpu_validation_cache()
         self._gpu_validated_this_session = False
+        self._show_next_gpu_validation_failure = False
         self._gpu_requirements_notice_shown = False
-        self.gpu_runtime_manager = GpuRuntimeManager()
+        self._pending_gpu_provider_switch = ''
+        self._pending_gpu_provider_snapshot: dict[str, object] | None = None
+        self._pending_gpu_device_enable = False
+        self._gpu_provider_switch_rollback: dict[str, object] | None = (
+            dict(self.config.gpu_provider_rollback) if self.config.gpu_provider_rollback else None
+        )
         self._config_save_warning_shown = False
         self._conversion_thread: QThread | None = None
         self._conversion_worker: ConversionWorker | None = None
@@ -108,7 +141,8 @@ class AppController(QObject):
         self.window.set_settings_visible(False, animated=False)
         self.window.set_progress(0, '0%')
         self.window.set_console_text('')
-        self._show_startup_runtime_prompt('Verifying ONNX Runtime support...\nPlease wait...')
+        if not self._startup_inventory_complete:
+            self._show_startup_runtime_prompt('Verifying ONNX Runtime support...\nPlease wait...')
         self.window.set_runtime_status(checking=True, runtime_available=False, cuda_available=False, dml_available=False, active_provider='CPU')
         self._dialogs = DialogCoordinator(self.window, apply_theme=self._apply_dialog_theme, exec_dialog=self._exec_dialog)
         self._connect_signals()
@@ -117,9 +151,7 @@ class AppController(QObject):
         if self._config_changed_during_startup:
             self._save_config(report_errors=False)
         self._start_runtime_probe()
-        QTimer.singleShot(80, self._prompt_model_download_if_missing)
-        if self.config.auto_check_updates:
-            QTimer.singleShot(900, lambda: self.check_for_updates(manual=False))
+        QTimer.singleShot(80, self._run_startup_prompts)
 
     def run(self) -> None:
         self.window.show()
@@ -131,20 +163,13 @@ class AppController(QObject):
         self.window.openDownloadsRequested.connect(self.open_downloads_folder)
         self.window.officialPageRequested.connect(lambda: webbrowser.open(OFFICIAL_PAGE_URL))
         self.window.devicePreferenceChanged.connect(self._on_device_preference_changed)
-        self.window.conversionMethodChanged.connect(self._on_conversion_method_changed)
-        self.window.modernAdaptiveThresholdsChanged.connect(lambda enabled: self._on_modern_option_changed('modern_adaptive_thresholds_enabled', enabled))
-        self.window.modernInputNormalizationChanged.connect(lambda enabled: self._on_modern_option_changed('modern_input_normalization_enabled', enabled))
-        self.window.modernSmartOverlapStitchingChanged.connect(lambda enabled: self._on_modern_option_changed('modern_smart_overlap_stitching_enabled', enabled))
-        self.window.modernAutoCalibrationChanged.connect(lambda enabled: self._on_modern_option_changed('modern_auto_calibration_enabled', enabled))
-        self.window.modernCleanupScaleChanged.connect(lambda value: self._on_modern_scale_changed('modern_cleanup_scale', value, default=1.0))
-        self.window.modernPedalClusterScaleChanged.connect(lambda value: self._on_modern_scale_changed('modern_pedal_cluster_scale', value, default=1.0))
-        self.window.modernAlignmentGateScaleChanged.connect(lambda value: self._on_modern_scale_changed('modern_alignment_gate_scale', value, default=1.0))
-        self.window.modernOnsetThresholdChanged.connect(lambda value: self._on_modern_threshold_changed('modern_manual_onset_threshold', value, lower=MODERN_ONSET_THRESHOLD_MIN, upper=MODERN_ONSET_THRESHOLD_MAX, default=MODERN_ONSET_THRESHOLD_DEFAULT))
-        self.window.modernOffsetThresholdChanged.connect(lambda value: self._on_modern_threshold_changed('modern_manual_offset_threshold', value, lower=MODERN_OFFSET_THRESHOLD_MIN, upper=MODERN_OFFSET_THRESHOLD_MAX, default=MODERN_OFFSET_THRESHOLD_DEFAULT))
-        self.window.modernFrameThresholdChanged.connect(lambda value: self._on_modern_threshold_changed('modern_manual_frame_threshold', value, lower=MODERN_FRAME_THRESHOLD_MIN, upper=MODERN_FRAME_THRESHOLD_MAX, default=MODERN_FRAME_THRESHOLD_DEFAULT))
-        self.window.modernPedalOffsetThresholdChanged.connect(lambda value: self._on_modern_threshold_changed('modern_manual_pedal_offset_threshold', value, lower=MODERN_PEDAL_OFFSET_THRESHOLD_MIN, upper=MODERN_PEDAL_OFFSET_THRESHOLD_MAX, default=MODERN_PEDAL_OFFSET_THRESHOLD_DEFAULT))
         self.window.gpuProviderPreferenceChanged.connect(self._on_gpu_provider_preference_changed)
-        self.window.gpuBatchSizeChanged.connect(self._on_gpu_batch_size_changed)
+        self.window.enginePedalsEnabledChanged.connect(self._on_engine_pedals_enabled_changed)
+        self.window.engineVelocityModeChanged.connect(self._on_engine_velocity_mode_changed)
+        self.window.engineUniformVelocityChanged.connect(self._on_engine_uniform_velocity_changed)
+        self.window.transcriptionPerformanceModeChanged.connect(self._on_transcription_performance_mode_changed)
+        self.window.gpuMemoryUsageChanged.connect(self._on_gpu_memory_usage_changed)
+        self.window.resetEngineSettingsRequested.connect(self._on_reset_engine_settings_requested)
         self.window.uiScalePercentChanged.connect(self._on_ui_scale_percent_changed)
         self.window.downloadLocationChanged.connect(self._on_download_location_changed)
         self.window.autoCheckUpdatesChanged.connect(self._on_auto_check_updates_changed)
@@ -155,12 +180,40 @@ class AppController(QObject):
         self.gpuValidationReady.connect(self._on_gpu_validation_ready)
 
     @staticmethod
-    def _runtime_has_gpu_provider(cuda_available: bool, dml_available: bool) -> bool:
-        return bool(cuda_available) or bool(dml_available)
-
-    @staticmethod
     def _normalize_runtime_path(path: str | Path | None) -> str:
         return str(path or '').strip()
+
+    @staticmethod
+    def _runtime_cache_key(path: str | Path | None) -> str:
+        candidate = str(path or '').strip()
+        return normalized_path_key(candidate) if candidate else ''
+
+    def _provider_runtime_status(self, provider: str | None) -> ProviderRuntimeStatus:
+        return self._runtime_inventory.provider_status(provider)
+
+    def _cached_runtime_probe(self, runtime_path: str | Path | None) -> dict[str, object] | None:
+        key = self._runtime_cache_key(runtime_path)
+        return self._runtime_probe_cache.get(key) if key else None
+
+    def _remember_runtime_probe(self, runtime_path: str | Path | None, probe: dict[str, object]) -> None:
+        key = self._runtime_cache_key(runtime_path)
+        if key:
+            self._runtime_probe_cache[key] = dict(probe)
+
+    def _seed_startup_gpu_validation_cache(self) -> None:
+        model_path = str(self._runtime_inventory.model_path or '').strip()
+        if not model_path:
+            return
+        try:
+            model_key = str(Path(model_path).resolve())
+        except Exception:
+            model_key = model_path
+        for provider in ('cuda', 'dml'):
+            status = self._provider_runtime_status(provider)
+            if not status.runtime_path or status.decision is None:
+                continue
+            runtime_key = self._runtime_cache_key(status.runtime_path)
+            self._gpu_validation_cache[(provider, runtime_key, model_key)] = status.decision
 
     @staticmethod
     def _runtime_candidates() -> list[str]:
@@ -182,7 +235,16 @@ class AppController(QObject):
         configured_path = str(self.config.gpu_runtime_path or '').strip()
         runtime_enabled = False
         runtime_path = ''
-        config_runtime_is_valid = configured_enabled and configured_path and runtime_service.is_runtime_path_valid(configured_path)
+        configured_probe = self._cached_runtime_probe(configured_path)
+        config_runtime_is_valid = bool(
+            configured_enabled
+            and configured_path
+            and (
+                bool(configured_probe.get('runtime_available', False))
+                if configured_probe is not None
+                else runtime_service.is_runtime_path_valid(configured_path)
+            )
+        )
         provider_pref = str(self.config.gpu_provider_preference or '').strip().lower()
         if config_runtime_is_valid and provider_pref in {'cuda', 'dml'}:
             configured_provider = gpu_runtime_service.detect_runtime_provider(configured_path)
@@ -210,26 +272,36 @@ class AppController(QObject):
     def _resolved_gpu_provider(self) -> str:
         return runtime_pack_service.resolve_provider_for_preference(self.config.gpu_provider_preference)
 
-    def _reset_cuda_session_validation(self) -> None:
-        self._gpu_validation_cache.clear()
+    def _target_gpu_provider_for_active_runtime(self) -> str:
+        return self._resolved_gpu_provider()
+
+    def _reset_cuda_session_validation(self, *, clear_cache: bool=True) -> None:
+        self._gpu_validation_token += 1
+        if clear_cache:
+            self._gpu_validation_cache.clear()
         self._gpu_validation_in_progress = False
         self._gpu_validated_this_session = False
 
     @staticmethod
     def _runtime_source_matches_provider_preference(provider_preference: str, *, cuda_available: bool, dml_available: bool) -> bool:
-        pref = str(provider_preference or 'auto').strip().lower()
+        pref = str(provider_preference or 'dml').strip().lower()
         if pref == 'cuda':
             return bool(cuda_available)
-        if pref == 'dml':
-            return bool(dml_available)
-        return bool(cuda_available or dml_available)
+        return bool(dml_available)
 
     def _runtime_path_matches_provider_preference(self, runtime_path: str | Path | None) -> bool:
         candidate = self._normalize_runtime_path(runtime_path)
         if not candidate:
             return False
         active_runtime = self._normalize_runtime_path(runtime_service.get_effective_runtime_root_for_gpu_checks())
-        if active_runtime and candidate.lower() == active_runtime.lower() and (not self._runtime_checking):
+        probed_runtime = self._normalize_runtime_path(getattr(self, '_runtime_probed_path', ''))
+        if (
+            active_runtime
+            and candidate.lower() == active_runtime.lower()
+            and probed_runtime
+            and candidate.lower() == probed_runtime.lower()
+            and (not self._runtime_checking)
+        ):
             if not self._runtime_available:
                 return False
             return self._runtime_source_matches_provider_preference(
@@ -237,7 +309,10 @@ class AppController(QObject):
                 cuda_available=self._cuda_available,
                 dml_available=self._dml_available,
             )
-        probe = self.gpu_runtime_manager.probe_runtime_path(candidate)
+        probe = self._cached_runtime_probe(candidate)
+        if probe is None:
+            probe = self.gpu_runtime_manager.probe_runtime_path(candidate)
+            self._remember_runtime_probe(candidate, probe)
         if not bool(probe.get('runtime_available', False)):
             return False
         return self._runtime_source_matches_provider_preference(
@@ -245,6 +320,157 @@ class AppController(QObject):
             cuda_available=bool(probe.get('cuda_available', False)),
             dml_available=bool(probe.get('dml_available', False)),
         )
+
+    @staticmethod
+    def _probe_supports_provider(probe: dict[str, object], provider: str) -> bool:
+        normalized = runtime_pack_service.resolve_provider_for_preference(provider)
+        if not bool(probe.get('runtime_available', False)):
+            return False
+        if normalized == 'cuda':
+            return bool(probe.get('cuda_available', False))
+        return bool(probe.get('dml_available', False))
+
+    def _runtime_source_for_provider(self, provider: str) -> str:
+        normalized = runtime_pack_service.resolve_provider_for_preference(provider)
+        known_status = self._provider_runtime_status(normalized)
+        if known_status.available and known_status.runtime_path:
+            return self._normalize_runtime_path(known_status.runtime_path)
+        candidates: list[str] = []
+        _installed_provider, installed_path = runtime_pack_service.resolve_installed_pack(normalized)
+        if installed_path:
+            return self._normalize_runtime_path(installed_path)
+        for raw_candidate in self._runtime_candidates():
+            candidate = self._normalize_runtime_path(raw_candidate)
+            if not candidate or any(existing.lower() == candidate.lower() for existing in candidates):
+                continue
+            candidates.append(candidate)
+        for candidate in candidates:
+            probe = self._cached_runtime_probe(candidate)
+            if probe is None:
+                probe = self.gpu_runtime_manager.probe_runtime_path(candidate)
+                self._remember_runtime_probe(candidate, probe)
+            if self._probe_supports_provider(probe, normalized):
+                return candidate
+        return ''
+
+    def _known_available_runtime_path(self, provider: str) -> str:
+        normalized = runtime_pack_service.resolve_provider_for_preference(provider)
+        known_status = self._provider_runtime_status(normalized)
+        if known_status.available and known_status.runtime_path:
+            return self._normalize_runtime_path(known_status.runtime_path)
+        if (
+            not self._runtime_checking
+            and normalized == self._resolved_gpu_provider()
+            and self._runtime_available
+            and self._runtime_source_matches_provider_preference(
+                normalized,
+                cuda_available=self._cuda_available,
+                dml_available=self._dml_available,
+            )
+        ):
+            return self._normalize_runtime_path(
+                runtime_service.get_effective_runtime_root_for_gpu_checks()
+            )
+        if not self._startup_inventory_complete:
+            return self._runtime_source_for_provider(normalized)
+        return ''
+
+    def _capture_gpu_provider_state(self) -> dict[str, object]:
+        return {
+            'provider': str(self.config.gpu_provider_preference or 'dml').strip().lower(),
+            'runtime_enabled': bool(self.config.gpu_runtime_enabled),
+            'runtime_path': str(self.config.gpu_runtime_path or '').strip(),
+            'device': str(self.config.device_preference or 'cpu').strip().lower(),
+            'gpu_batch_size': int(self.config.gpu_batch_size),
+            'gpu_memory_max_batch': int(self.config.gpu_memory_max_batch),
+        }
+
+    def _set_gpu_provider_switch_rollback(self, snapshot: dict[str, object] | None) -> None:
+        normalized = dict(snapshot) if snapshot else None
+        self._gpu_provider_switch_rollback = normalized
+        self.config.gpu_provider_rollback = dict(normalized) if normalized else None
+
+    def _clear_gpu_provider_switch_rollback(self) -> None:
+        self._set_gpu_provider_switch_rollback(None)
+
+    def _clear_pending_gpu_provider_switch(self) -> None:
+        self._pending_gpu_provider_switch = ''
+        self._pending_gpu_provider_snapshot = None
+
+    def _activate_gpu_provider_switch(
+        self,
+        provider: str,
+        runtime_path: str,
+        snapshot: dict[str, object],
+        *,
+        enable_gpu: bool=False,
+    ) -> bool:
+        normalized = runtime_pack_service.resolve_provider_for_preference(provider)
+        enabled, selected_path = runtime_service.set_gpu_runtime(True, runtime_path)
+        if not enabled or not selected_path:
+            runtime_service.set_gpu_runtime(
+                bool(snapshot.get('runtime_enabled', False)),
+                str(snapshot.get('runtime_path', '') or ''),
+            )
+            return False
+        restart_required = runtime_service.is_runtime_restart_required()
+        if str(snapshot.get('device', 'cpu')).strip().lower() == 'gpu':
+            self._set_gpu_provider_switch_rollback(snapshot)
+        else:
+            self._clear_gpu_provider_switch_rollback()
+        self.config.gpu_provider_preference = runtime_service.set_gpu_provider_preference(normalized)
+        self.config.gpu_runtime_enabled = bool(enabled)
+        self.config.gpu_runtime_path = str(selected_path)
+        if enable_gpu:
+            self.config.device_preference = runtime_service.set_device_preference('gpu')
+            self._activate_performance_mode_for_device('gpu', reset_session=True)
+        presets = resource_service.gpu_memory_presets(self.config.gpu_memory_max_batch)
+        self.config.gpu_batch_size = presets['balanced']
+        runtime_service.set_gpu_batch_size(self.config.gpu_batch_size)
+        self._reset_cuda_session_validation(clear_cache=False)
+        self._clear_gpu_runtime_validation_state()
+        self._show_next_gpu_validation_failure = True
+        if not self.transcription_in_progress:
+            conversion_service.reset_transcriptor()
+        self._apply_state_transaction(
+            refresh_first=False,
+            start_runtime_probe=not restart_required,
+            apply_controls=True,
+        )
+        if restart_required:
+            self._request_runtime_backend_restart(normalized)
+        return True
+
+    def _restore_gpu_provider_switch(self) -> tuple[str, str] | None:
+        snapshot = self._gpu_provider_switch_rollback or self.config.gpu_provider_rollback
+        self._clear_gpu_provider_switch_rollback()
+        if not snapshot:
+            return None
+        previous_provider = runtime_pack_service.resolve_provider_for_preference(str(snapshot.get('provider', 'dml')))
+        failed_provider = runtime_pack_service.resolve_provider_for_preference(self.config.gpu_provider_preference)
+        self.config.gpu_provider_preference = runtime_service.set_gpu_provider_preference(previous_provider)
+        enabled, runtime_path = runtime_service.set_gpu_runtime(
+            bool(snapshot.get('runtime_enabled', False)),
+            str(snapshot.get('runtime_path', '') or ''),
+        )
+        self.config.gpu_runtime_enabled = bool(enabled)
+        self.config.gpu_runtime_path = str(runtime_path or '')
+        device = str(snapshot.get('device', 'cpu') or 'cpu').strip().lower()
+        self.config.device_preference = runtime_service.set_device_preference(device)
+        self.config.gpu_memory_max_batch = resource_service.normalize_gpu_memory_max_batch(
+            snapshot.get('gpu_memory_max_batch', self.config.gpu_memory_max_batch)
+        )
+        self.config.gpu_batch_size = min(
+            resource_service.normalize_gpu_batch_size(snapshot.get('gpu_batch_size', self.config.gpu_batch_size)),
+            self.config.gpu_memory_max_batch,
+        )
+        self._reset_cuda_session_validation()
+        self._clear_gpu_runtime_validation_state()
+        self._show_next_gpu_validation_failure = False
+        self._restart_prompt_pending = False
+        self._restart_after_gpu_setup = False
+        self._activate_performance_mode_for_device(self.config.device_preference, reset_session=True)
+        return (failed_provider, previous_provider)
 
     def _try_activate_non_pack_runtime_source(self) -> bool:
         for candidate in self._runtime_candidates():
@@ -285,24 +511,51 @@ class AppController(QObject):
     def _refresh_settings_values(self) -> None:
         self.window.set_settings_values(
             device_preference=self.config.device_preference,
-            conversion_method=normalize_conversion_method(self.config.conversion_method),
-            modern_adaptive_thresholds_enabled=bool(self.config.modern_adaptive_thresholds_enabled),
-            modern_input_normalization_enabled=bool(self.config.modern_input_normalization_enabled),
-            modern_smart_overlap_stitching_enabled=bool(self.config.modern_smart_overlap_stitching_enabled),
-            modern_auto_calibration_enabled=bool(self.config.modern_auto_calibration_enabled),
-            modern_cleanup_scale=float(self.config.modern_cleanup_scale),
-            modern_pedal_cluster_scale=float(self.config.modern_pedal_cluster_scale),
-            modern_alignment_gate_scale=float(self.config.modern_alignment_gate_scale),
-            modern_manual_onset_threshold=float(self.config.modern_manual_onset_threshold),
-            modern_manual_offset_threshold=float(self.config.modern_manual_offset_threshold),
-            modern_manual_frame_threshold=float(self.config.modern_manual_frame_threshold),
-            modern_manual_pedal_offset_threshold=float(self.config.modern_manual_pedal_offset_threshold),
             gpu_provider_preference=self.config.gpu_provider_preference,
+            engine_pedals_enabled=self.config.engine_pedals_enabled,
+            engine_velocity_mode=self.config.engine_velocity_mode,
+            engine_uniform_velocity=self.config.engine_uniform_velocity,
+            cpu_performance_mode=self.config.cpu_performance_mode,
+            gpu_performance_mode=self.config.gpu_performance_mode,
             gpu_batch_size=self.config.gpu_batch_size,
+            gpu_memory_max_batch=self.config.gpu_memory_max_batch,
             ui_scale_percent=self.config.ui_scale_percent,
             download_location=self.config.download_location,
             auto_check_updates=self.config.auto_check_updates,
         )
+
+    def _performance_mode_for_device(self, device: str | None = None) -> str:
+        selected_device = resource_service.normalize_performance_device(device or self.config.device_preference)
+        if selected_device == 'gpu':
+            return resource_service.normalize_performance_mode(self.config.gpu_performance_mode)
+        return resource_service.normalize_performance_mode(self.config.cpu_performance_mode)
+
+    def _set_performance_mode_for_device(self, device: str, mode: str) -> str:
+        selected_device = resource_service.normalize_performance_device(device)
+        normalized = resource_service.normalize_performance_mode(mode)
+        if selected_device == 'gpu':
+            self.config.gpu_performance_mode = normalized
+        else:
+            self.config.cpu_performance_mode = normalized
+        return normalized
+
+    def _activate_performance_mode_for_device(self, device: str | None = None, *, reset_session: bool = False) -> str:
+        selected_device = resource_service.normalize_performance_device(device or self.config.device_preference)
+        active_mode = resource_service.set_performance_mode(self._performance_mode_for_device(selected_device))
+        if selected_device == 'gpu':
+            self.config.gpu_memory_max_batch = resource_service.normalize_gpu_memory_max_batch(
+                self.config.gpu_memory_max_batch
+            )
+            self.config.gpu_batch_size = min(
+                resource_service.normalize_gpu_batch_size(self.config.gpu_batch_size),
+                self.config.gpu_memory_max_batch,
+            )
+            runtime_service.set_gpu_batch_size(self.config.gpu_batch_size)
+        else:
+            runtime_service.set_gpu_batch_size(1)
+        if reset_session:
+            conversion_service.reset_transcriptor()
+        return active_mode
 
     def _sync_settings_and_persist(self, *, refresh_first: bool, report_save_errors: bool=True) -> bool:
         if refresh_first:
@@ -325,9 +578,9 @@ class AppController(QObject):
         return saved
 
     def _gpu_validation_key(self, model_path: Path | str) -> tuple[str, str, str]:
-        provider = self._resolved_gpu_provider()
+        provider = self._target_gpu_provider_for_active_runtime()
         runtime_root = runtime_service.get_effective_runtime_root_for_gpu_checks()
-        runtime_path = str(runtime_root or '').strip()
+        runtime_path = self._runtime_cache_key(runtime_root)
         try:
             model_key = str(Path(model_path).resolve())
         except Exception:
@@ -341,32 +594,49 @@ class AppController(QObject):
     def _cache_gpu_validation_decision(self, model_path: Path | str, decision: RuntimeDecision) -> None:
         key = self._gpu_validation_key(model_path)
         self._gpu_validation_cache[key] = decision
+        provider, runtime_key, _model_key = key
+        runtime_path = str(runtime_service.get_effective_runtime_root_for_gpu_checks() or '').strip()
+        if provider in {'cuda', 'dml'} and runtime_path and runtime_key:
+            self._runtime_inventory.providers[provider] = ProviderRuntimeStatus(
+                provider=provider,
+                runtime_path=runtime_path,
+                runtime_installed=True,
+                available=decision.device_mode == 'gpu',
+                decision=decision,
+            )
+            self._runtime_inventory.model_path = str(model_path or '')
 
     def _should_show_gpu_setup_notice(self) -> bool:
         if self._gpu_requirements_notice_shown:
             return False
         if self._runtime_checking:
             return False
-        provider = self._resolved_gpu_provider()
-        provider_ready = self._runtime_has_gpu_provider(self._cuda_available, self._dml_available)
+        provider = self._target_gpu_provider_for_active_runtime()
+        provider_ready = self._runtime_source_matches_provider_preference(
+            self.config.gpu_provider_preference,
+            cuda_available=self._cuda_available,
+            dml_available=self._dml_available,
+        )
         missing_cuda_dlls: list[str] = []
         if provider == 'cuda':
             try:
                 missing_cuda_dlls = cuda_dependency_service.missing_required_cuda_dlls()
-            except Exception:
-                missing_cuda_dlls = []
+            except Exception as exc:
+                print(f'[A2M] Warning: CUDA dependency check failed: {exc}', file=sys.stderr)
+                missing_cuda_dlls = ['CUDA dependency check failed']
         return (not provider_ready) or bool(missing_cuda_dlls)
 
     def _show_gpu_setup_notice_if_needed(self) -> None:
         if not self._should_show_gpu_setup_notice():
             return
-        provider = self._resolved_gpu_provider()
+        provider = self._target_gpu_provider_for_active_runtime()
         if provider == 'cuda':
+            requirement_text = cuda_dependency_service.cuda_requirements_summary()
             message = (
                 'GPU acceleration may take time to set up.\n\n'
                 'Depending on your system, A2M may need up to three dependencies:\n'
-                '1) ONNX GPU runtime pack, 2) CUDA Toolkit, 3) cuDNN.\n\n'
-                'A2M can install two of these automatically, but the total download size can reach roughly 4 GB.\n'
+                f'1) ONNX GPU runtime, 2) {requirement_text}.\n\n'
+                'A2M can install some dependencies automatically, but the total download size can be large.\n'
                 'Even after setup, GPU may not be faster on lower-end hardware.\n\n'
                 'CPU mode remains available and stable.'
             )
@@ -389,14 +659,26 @@ class AppController(QObject):
             return False
         if self._resolved_gpu_provider() not in {'cuda', 'dml'}:
             return False
+        if not self._runtime_source_matches_provider_preference(
+            self.config.gpu_provider_preference,
+            cuda_available=self._cuda_available,
+            dml_available=self._dml_available,
+        ):
+            return False
         model_path = model_service.get_existing_model_path()
         if model_path is None:
             return False
         cached = self._cached_gpu_validation_decision(model_path)
         if cached is not None:
-            self._apply_runtime_decision(cached, show_message=show_message and (cached.device_mode != 'gpu'))
-            self._refresh_runtime_status()
-            self._apply_controls_state()
+            self._gpu_validation_token += 1
+            token = int(self._gpu_validation_token)
+            self._gpu_validation_in_progress = True
+            self._on_gpu_validation_ready(
+                token,
+                cached,
+                bool(show_message),
+                str(model_path),
+            )
             return True
         self._gpu_validation_token += 1
         token = int(self._gpu_validation_token)
@@ -434,13 +716,43 @@ class AppController(QObject):
         else:
             decision = decision_obj
         self._cache_gpu_validation_decision(str(model_path or ''), decision)
+        if decision.device_mode != 'gpu' and self._gpu_provider_switch_rollback:
+            restored = self._restore_gpu_provider_switch()
+            if restored is not None:
+                failed_provider, previous_provider = restored
+                failed_label = runtime_pack_service.provider_display_name(failed_provider)
+                previous_label = runtime_pack_service.provider_display_name(previous_provider)
+                reason = str(decision.reason_text or 'GPU initialization failed.').strip()
+                self.window.set_progress(0, f'{failed_label} unavailable; keeping {previous_label}')
+                if show_message:
+                    self._show_info(
+                        f'{failed_label} unavailable',
+                        f'{failed_label} could not start, so A2M kept using {previous_label}.\n\nReason: {reason}',
+                    )
+                self._apply_state_transaction(
+                    refresh_first=False,
+                    report_save_errors=False,
+                    start_runtime_probe=True,
+                    apply_controls=True,
+                )
+                self._clear_startup_runtime_prompt_if_idle()
+                return
+        if decision.device_mode == 'gpu':
+            self._clear_gpu_provider_switch_rollback()
         self._apply_runtime_decision(decision, show_message=bool(show_message) and (decision.device_mode != 'gpu'))
+        if decision.device_mode == 'gpu':
+            provider_name = runtime_pack_service.provider_display_name(decision.active_provider)
+            self.window.set_progress(100, f'{provider_name} acceleration ready')
+        else:
+            self.window.set_progress(0, 'GPU unavailable; using CPU')
         self._apply_state_transaction(
             refresh_first=False,
             report_save_errors=False,
             start_runtime_probe=(decision.device_mode != 'gpu'),
             apply_controls=True,
         )
+        if decision.device_mode != 'gpu':
+            self._restart_prompt_pending = False
         if decision.device_mode == 'gpu' and self._restart_prompt_pending:
             self._restart_prompt_pending = False
             self._restart_after_gpu_setup = True
@@ -461,26 +773,30 @@ class AppController(QObject):
             or self.cudnn_install_in_progress
             or self.transcription_in_progress
             or self._gpu_validation_in_progress
+            or self.update_check_in_progress
+            or self._update_worker is not None
+            or self._update_install_worker is not None
+            or self._update_installer_handoff_in_progress
         ):
             return
         self._restart_after_gpu_setup = False
         self._restart_application()
 
+    def _request_runtime_backend_restart(self, provider: str | None = None) -> None:
+        already_requested = bool(self._restart_after_gpu_setup)
+        self._restart_prompt_pending = False
+        self._restart_after_gpu_setup = True
+        if not already_requested:
+            provider_label = runtime_pack_service.provider_display_name(provider)
+            self._show_info(
+                'Restart required',
+                f'A2M will restart to switch safely to the {provider_label} runtime.',
+            )
+        self._try_restart_after_gpu_setup()
+
     def _restart_application(self) -> None:
-        if getattr(sys, 'frozen', False):
-            launch_args = [str(sys.executable), *sys.argv[1:]]
-            working_dir = str(Path(sys.executable).resolve().parent)
-        else:
-            script_path = str(Path(sys.argv[0]).resolve())
-            launch_args = [str(sys.executable), script_path, *sys.argv[1:]]
-            working_dir = str(Path(script_path).resolve().parent)
         self._persist_config()
-        try:
-            subprocess.Popen(launch_args, cwd=working_dir)
-        except Exception as exc:
-            self._show_error('Restart failed', f'GPU setup finished, but A2M could not restart automatically.\n\n{exc}')
-            return
-        self.window.close()
+        self.app.exit(APP_RESTART_EXIT_CODE)
 
     def _prompt_runtime_pack_install(self, provider: str) -> bool:
         if self.runtime_pack_download_in_progress:
@@ -488,15 +804,72 @@ class AppController(QObject):
             return False
         normalized_provider = runtime_pack_service.resolve_provider_for_preference(provider)
         provider_label = runtime_pack_service.provider_display_name(normalized_provider)
+        size_summary = runtime_pack_service.provider_pack_size_summary(normalized_provider)
         pack_url = runtime_pack_service.provider_pack_url(normalized_provider)
         if not pack_url:
             self._show_warning('Runtime pack unavailable', f'{provider_label} runtime pack URL is not configured.')
             return False
-        prompt = f'GPU acceleration requires the {provider_label} runtime pack.\n\nWould you like to download and install it now?'
+        if normalized_provider == 'cuda':
+            explanation = (
+                'CUDA is intended for NVIDIA graphics cards and can be the fastest option. '
+                'It may also require NVIDIA CUDA and cuDNN components.'
+            )
+        else:
+            explanation = (
+                'DirectML works with most modern Windows graphics cards and is the easiest '
+                'GPU option to set up.'
+            )
+        prompt = (
+            f'GPU acceleration requires the {provider_label} runtime pack.\n\n'
+            f'{explanation}\n\nEstimated size: {size_summary}\n\n'
+            'Download and install it now?'
+        )
         if self._ask_question('GPU runtime pack required', prompt, default_button=QMessageBox.Yes) != QMessageBox.Yes:
             return False
         self._start_runtime_pack_download(normalized_provider)
         return True
+
+    def _choose_gpu_provider_for_setup(self) -> str:
+        directml_size = runtime_pack_service.provider_pack_size_summary('dml')
+        cuda_size = runtime_pack_service.provider_pack_size_summary('cuda')
+        dialog = QMessageBox(self.window)
+        dialog.setWindowTitle('Choose GPU acceleration')
+        dialog.setIcon(QMessageBox.Information)
+        dialog.setText('A2M could not start a GPU backend yet.')
+        dialog.setInformativeText(
+            'DirectML (recommended) works with most modern Windows graphics cards and has '
+            f'the simplest setup. {directml_size}\n\n'
+            'CUDA is for NVIDIA graphics cards. It can be faster, but may need additional '
+            f'NVIDIA CUDA and cuDNN components. {cuda_size} Additional NVIDIA components '
+            'are not included in that estimate.'
+        )
+        directml_button = dialog.addButton('Set up DirectML (Recommended)', QMessageBox.AcceptRole)
+        cuda_button = dialog.addButton('Set up CUDA', QMessageBox.ActionRole)
+        dialog.addButton(QMessageBox.Cancel)
+        dialog.setDefaultButton(directml_button)
+        self._apply_dialog_theme(dialog)
+        self._exec_dialog(dialog)
+        clicked = dialog.clickedButton()
+        if clicked is directml_button:
+            return 'dml'
+        if clicked is cuda_button:
+            return 'cuda'
+        return ''
+
+    def _explain_unavailable_provider(self, status: ProviderRuntimeStatus) -> None:
+        provider = runtime_pack_service.resolve_provider_for_preference(status.provider)
+        provider_label = runtime_pack_service.provider_display_name(provider)
+        reason = str(status.reason_text or f'{provider_label} could not start on this system.').strip()
+        if provider == 'cuda' and status.runtime_path:
+            self._prompt_cuda_dependency_setup(
+                f'{provider_label} is installed but cannot start yet.\n\nReason: {reason}',
+                runtime_path=status.runtime_path,
+            )
+            return
+        self._show_info(
+            f'{provider_label} unavailable',
+            f'{provider_label} is installed but could not start on this system.\n\nReason: {reason}',
+        )
 
     def _show_runtime_reinstall_required(self) -> None:
         self._show_warning('ONNX Runtime missing', RUNTIME_WARNING_MISSING)
@@ -505,7 +878,7 @@ class AppController(QObject):
         provider_label = runtime_pack_service.provider_display_name(provider)
         self.runtime_pack_download_in_progress = True
         self._apply_controls_state()
-        self.window.set_progress(0, 'Downloading 0.00%')
+        self.window.set_progress(0, f'Downloading {provider_label} runtime pack 0.00% | ETA --')
         self.window.set_console_text(f'Downloading {provider_label} runtime pack...\nPlease wait...')
         worker = RuntimePackDownloadWorker(provider)
         thread = self._create_worker_thread(worker)
@@ -846,6 +1219,21 @@ class AppController(QObject):
     def _start_runtime_probe(self) -> None:
         self._runtime_probe_token += 1
         token = int(self._runtime_probe_token)
+        probe_path = self._normalize_runtime_path(
+            runtime_service.get_effective_runtime_root_for_gpu_checks()
+        )
+        self._runtime_probe_target_path = probe_path
+        cached_probe = self._cached_runtime_probe(probe_path)
+        if cached_probe is not None or (self._startup_inventory_complete and not probe_path):
+            probe = cached_probe or {}
+            self._runtime_checking = False
+            self._on_runtime_probe_ready(
+                token,
+                bool(probe.get('runtime_available', False)),
+                bool(probe.get('cuda_available', False)),
+                bool(probe.get('dml_available', False)),
+            )
+            return
         self._runtime_checking = True
         self.window.set_runtime_status(checking=True, runtime_available=False, cuda_available=False, dml_available=False, active_provider='CPU')
         self.window.set_progress(0, 'Verifying ONNX Runtime...')
@@ -856,9 +1244,9 @@ class AppController(QObject):
             runtime_ok = False
             cuda_ok = False
             dml_ok = False
-            probe_path = runtime_service.get_effective_runtime_root_for_gpu_checks()
             if probe_path:
                 probe = self.gpu_runtime_manager.probe_runtime_path(probe_path)
+                self._remember_runtime_probe(probe_path, probe)
                 runtime_ok = bool(probe.get('runtime_available', False))
                 cuda_ok = bool(probe.get('cuda_available', False))
                 dml_ok = bool(probe.get('dml_available', False))
@@ -872,13 +1260,34 @@ class AppController(QObject):
         if int(token) != int(self._runtime_probe_token):
             return
         self._runtime_checking = False
+        self._runtime_probed_path = self._normalize_runtime_path(self._runtime_probe_target_path)
         self._runtime_available = bool(runtime_available)
         self._cuda_available = bool(cuda_available)
         self._dml_available = bool(dml_available)
-        if (not self._runtime_has_gpu_provider(self._cuda_available, self._dml_available)) and self.config.gpu_provider_preference != 'auto':
-            self.config.gpu_provider_preference = runtime_service.set_gpu_provider_preference('auto')
-            self._reset_cuda_session_validation()
-            self._apply_state_transaction(refresh_first=False, report_save_errors=False)
+        provider_ready = self._runtime_source_matches_provider_preference(
+            self.config.gpu_provider_preference,
+            cuda_available=self._cuda_available,
+            dml_available=self._dml_available,
+        )
+        if self._gpu_provider_switch_rollback and (not provider_ready):
+            restored = self._restore_gpu_provider_switch()
+            if restored is not None:
+                failed_provider, previous_provider = restored
+                failed_label = runtime_pack_service.provider_display_name(failed_provider)
+                previous_label = runtime_pack_service.provider_display_name(previous_provider)
+                self.window.set_progress(0, f'{failed_label} unavailable; keeping {previous_label}')
+                self._show_info(
+                    f'{failed_label} unavailable',
+                    f'{failed_label} could not load on this system, so A2M kept using {previous_label}.',
+                )
+                self._apply_state_transaction(
+                    refresh_first=False,
+                    report_save_errors=False,
+                    start_runtime_probe=True,
+                    apply_controls=True,
+                )
+                self._clear_startup_runtime_prompt_if_idle()
+                return
         self._refresh_runtime_status()
         self._apply_controls_state()
         self._validate_gpu_session_on_startup_if_needed()
@@ -895,11 +1304,15 @@ class AppController(QObject):
             if self.config.gpu_last_reason_text:
                 return f'CPU fallback: {self.config.gpu_last_reason_text}'
             validated_provider = str(self.config.gpu_last_validated_provider or '').strip().lower()
-            provider_pref = str(self.config.gpu_provider_preference or 'auto').strip().lower()
+            provider_pref = str(self.config.gpu_provider_preference or 'dml').strip().lower()
             if self._gpu_validated_this_session and validated_provider in {'cuda', 'dml'}:
-                if provider_pref == 'auto' or provider_pref == validated_provider:
-                    return 'GPU'
-            if self._runtime_has_gpu_provider(self._cuda_available, self._dml_available):
+                if provider_pref == validated_provider:
+                    return runtime_pack_service.provider_display_name(validated_provider)
+            if self._runtime_source_matches_provider_preference(
+                self.config.gpu_provider_preference,
+                cuda_available=self._cuda_available,
+                dml_available=self._dml_available,
+            ):
                 return 'Validation pending'
         return 'CPU'
 
@@ -922,13 +1335,12 @@ class AppController(QObject):
         self._gpu_validated_this_session = False
 
     def _apply_runtime_decision(self, decision: RuntimeDecision, *, show_message: bool=False) -> None:
-        requested_provider = self._resolved_gpu_provider()
+        requested_provider = self._target_gpu_provider_for_active_runtime()
         self._record_runtime_decision(decision)
         conversion_service.reset_transcriptor()
         if decision.device_mode != 'gpu':
             should_prompt_cuda = show_message and requested_provider == 'cuda' and self._should_prompt_cuda_toolkit_install(decision)
             self.config.device_preference = runtime_service.set_device_preference('cpu')
-            self.config.gpu_provider_preference = runtime_service.set_gpu_provider_preference('auto')
             if show_message:
                 fallback_text = f'GPU unavailable. Using CPU fallback: {decision.reason_text or "GPU initialization failed."}'
                 if should_prompt_cuda:
@@ -937,16 +1349,20 @@ class AppController(QObject):
                     self._show_info('GPU unavailable', fallback_text)
         else:
             self.config.device_preference = runtime_service.set_device_preference('gpu')
+        self._activate_performance_mode_for_device(self.config.device_preference)
         self._refresh_runtime_status()
 
-    def _prompt_cuda_dependency_setup(self, fallback_text: str) -> None:
-        prompt_cuda = fallback_text + '\n\nCUDA mode requires CUDA 12.9.1 (Express install).\nWould you like to open the NVIDIA CUDA 12.9.1 download page now?'
+    def _prompt_cuda_dependency_setup(self, fallback_text: str, *, runtime_path: str | Path | None=None) -> None:
+        target_runtime = str(runtime_path or runtime_service.get_effective_runtime_root_for_gpu_checks() or '').strip()
+        requirement_text = cuda_dependency_service.cuda_requirements_summary(target_runtime)
+        prompt_cuda = fallback_text + f'\n\nCUDA mode requires {requirement_text}.\nWould you like to open the NVIDIA CUDA download page now?'
         if self._ask_question('CUDA required', prompt_cuda, default_button=QMessageBox.Yes) == QMessageBox.Yes:
             webbrowser.open(CUDA_DOWNLOAD_URL)
-        cudnn_url = str(CUDNN_DOWNLOAD_URL or '').strip()
+        cudnn_url = str(cuda_dependency_service.selected_cudnn_download(target_runtime)[0] or '').strip()
         if not cudnn_url:
             return
-        prompt_cudnn = 'CUDA requires cuDNN to function correctly.\n\nA2M can download cuDNN 9.19 for CUDA 12 and add its bin folder to PATH automatically.\n\nWould you like to do that now?'
+        cudnn_major = cuda_dependency_service.get_cuda_runtime_requirements(target_runtime).cudnn_major
+        prompt_cudnn = f'CUDA requires cuDNN {cudnn_major} to function correctly.\n\nA2M can download cuDNN 9.19 into its private application data and configure it automatically.\n\nWould you like to do that now?'
         if self._ask_question('Install cuDNN', prompt_cudnn, default_button=QMessageBox.Yes) != QMessageBox.Yes:
             return
         self._start_cudnn_install()
@@ -957,8 +1373,9 @@ class AppController(QObject):
             return
         self.cudnn_install_in_progress = True
         self._apply_controls_state()
-        self.window.set_progress(0, 'Downloading 0.00%')
-        self.window.set_console_text('Downloading cuDNN 9.19 package...\nPlease wait...')
+        self.window.set_progress(0, 'Downloading 0.00% | ETA --')
+        requirement_text = cuda_dependency_service.cuda_requirements_summary(runtime_service.get_effective_runtime_root_for_gpu_checks())
+        self.window.set_console_text(f'Downloading cuDNN package for {requirement_text}...\nPlease wait...')
         worker = CudnnInstallWorker()
         thread = self._create_worker_thread(worker)
         worker.progressChanged.connect(self.window.set_progress)
@@ -981,7 +1398,7 @@ class AppController(QObject):
         else:
             bin_dir = ''
             user_changed = False
-        restart_note = '\n\nPlease restart A2M so all checks use the updated PATH.' if user_changed else ''
+        restart_note = '\n\nA2M will restart if the active runtime needs to reload the new libraries.' if user_changed else ''
         if bin_dir:
             self._show_info('cuDNN installed', f'cuDNN installed successfully.\n\nBin path:\n{bin_dir}{restart_note}')
         else:
@@ -1013,7 +1430,9 @@ class AppController(QObject):
     def _validate_gpu_session_on_startup_if_needed(self) -> None:
         if self.config.device_preference != 'gpu':
             return
-        self._start_gpu_runtime_validation(show_message=False, startup=True)
+        show_message = bool(self._show_next_gpu_validation_failure)
+        if self._start_gpu_runtime_validation(show_message=show_message, startup=True):
+            self._show_next_gpu_validation_failure = False
 
     def _show_startup_runtime_prompt(self, text: str) -> None:
         if (
@@ -1074,12 +1493,32 @@ class AppController(QObject):
             return
         self.window.set_model_status(ready=False)
 
+    def _run_startup_prompts(self) -> None:
+        self._continue_startup_prompts()
+
+    def _continue_startup_prompts(self) -> None:
+        if not self.window.isVisible():
+            return
+        self._prompt_model_download_if_missing()
+        if self.window.isVisible() and self.config.auto_check_updates:
+            QTimer.singleShot(820, lambda: self.check_for_updates(manual=False))
+
+    def _apply_gpu_memory_level(self, batch_size: int) -> None:
+        self.config.gpu_batch_size = min(
+            resource_service.normalize_gpu_batch_size(batch_size),
+            resource_service.normalize_gpu_memory_max_batch(self.config.gpu_memory_max_batch),
+        )
+        if self.config.device_preference == 'gpu':
+            runtime_service.set_gpu_batch_size(self.config.gpu_batch_size)
+            conversion_service.reset_transcriptor()
+        self._apply_state_transaction(refresh_first=False, report_save_errors=False)
+
     def _prompt_model_download_if_missing(self) -> None:
         if model_service.get_existing_model_path() is not None:
             return
         install_hint = model_service.get_model_install_hint()
-        prompt = f'A2M needs the ONNX transcription model before it can convert audio.\n\nIt will be downloaded once to:\n{install_hint}\n\nWould you like to download it now?'
-        should_download = self._ask_question('Transcription model required', prompt, default_button=QMessageBox.Yes)
+        prompt = f'A2M needs the Transcription Model package before it can convert audio.\n\nThe approximately 48 MB package will be downloaded once to:\n{install_hint}\n\nWould you like to download it now?'
+        should_download = self._ask_question('Transcription Model required', prompt, default_button=QMessageBox.Yes)
         if should_download == QMessageBox.Yes:
             self.start_model_download()
             return
@@ -1091,6 +1530,7 @@ class AppController(QObject):
             return
         self.selected_file = Path(file_path)
         self.window.set_file_info(self.selected_file.name, str(self.selected_file))
+        self.window.set_progress(0, 'Transcribing 0.00% | ETA --')
         self._apply_controls_state()
 
     def start_model_download(self) -> None:
@@ -1098,8 +1538,8 @@ class AppController(QObject):
             return
         self.model_download_in_progress = True
         self._apply_controls_state()
-        self.window.set_progress(0, 'Downloading 0%')
-        self.window.set_console_text('Downloading ONNX model...\nPlease wait...')
+        self.window.set_progress(0, 'Downloading 0.00% | ETA --')
+        self.window.set_console_text('Downloading Transcription Model...\nPlease wait...')
         worker = ModelDownloadWorker()
         thread = self._create_worker_thread(worker)
         worker.progressChanged.connect(self.window.set_progress)
@@ -1134,6 +1574,8 @@ class AppController(QObject):
             self.window.close()
 
     def _on_runtime_pack_download_success(self, payload: object) -> None:
+        pending_device_enable = bool(self._pending_gpu_device_enable)
+        self._pending_gpu_device_enable = False
         if isinstance(payload, RuntimePackDownloadPayload):
             provider = str(payload.provider or '').strip().lower()
             runtime_path = str(payload.runtime_path or '').strip()
@@ -1152,21 +1594,80 @@ class AppController(QObject):
         except Exception as exc:
             self._show_error('Runtime pack download failed', str(exc))
             return
-        self.config.gpu_runtime_enabled, self.config.gpu_runtime_path = runtime_service.set_gpu_runtime(True, runtime_path)
+        installed_decision: RuntimeDecision | None = None
+        validated_model_path = model_service.get_existing_model_path()
+        if provider == 'dml' and validated_model_path is not None:
+            installed_decision = RuntimeDecision(
+                device_mode='gpu',
+                active_provider='dml',
+                gpu_model_name=gpu_runtime_service.get_gpu_model_name('dml'),
+                reason_code='',
+                reason_text='',
+            )
+            try:
+                model_key = str(validated_model_path.resolve())
+            except Exception:
+                model_key = str(validated_model_path)
+            self._gpu_validation_cache[
+                ('dml', self._runtime_cache_key(runtime_path), model_key)
+            ] = installed_decision
+            self._runtime_inventory.model_path = str(validated_model_path)
+        self._runtime_inventory.providers[provider] = ProviderRuntimeStatus(
+            provider=provider,
+            runtime_path=runtime_path,
+            runtime_installed=True,
+            available=installed_decision is not None,
+            decision=installed_decision,
+        )
+        self._runtime_probe_cache.pop(self._runtime_cache_key(runtime_path), None)
+        pending_provider = str(self._pending_gpu_provider_switch or '').strip().lower()
+        pending_snapshot = self._pending_gpu_provider_snapshot
+        self._clear_pending_gpu_provider_switch()
+        activated_pending_switch = pending_provider == provider and pending_snapshot is not None
+        if activated_pending_switch:
+            if not self._activate_gpu_provider_switch(
+                provider,
+                runtime_path,
+                pending_snapshot,
+                enable_gpu=pending_device_enable,
+            ):
+                self._show_error('Runtime pack activation failed', f'{provider_label} was installed but could not be activated.')
+                return
+        else:
+            self.config.gpu_runtime_enabled, self.config.gpu_runtime_path = runtime_service.set_gpu_runtime(True, runtime_path)
+            if pending_device_enable:
+                self.config.device_preference = runtime_service.set_device_preference('gpu')
+                self._activate_performance_mode_for_device('gpu', reset_session=True)
+                self._clear_gpu_runtime_validation_state()
+                self._show_next_gpu_validation_failure = True
+        restart_required = runtime_service.is_runtime_restart_required()
         self.window.set_progress(100, 'Downloaded')
         self.window.set_console_text(f'{provider_label} runtime pack installed:\n{runtime_path}')
-        self._reset_cuda_session_validation()
-        self._restart_prompt_pending = True
-        if self.config.device_preference == 'gpu':
-            self._start_gpu_runtime_validation(show_message=True)
-        self._apply_state_transaction(refresh_first=False, report_save_errors=False, start_runtime_probe=True, apply_controls=True)
+        if not activated_pending_switch:
+            self._reset_cuda_session_validation()
+        self._restart_prompt_pending = False
+        if not activated_pending_switch:
+            self._apply_state_transaction(
+                refresh_first=False,
+                report_save_errors=False,
+                start_runtime_probe=not restart_required,
+                apply_controls=True,
+            )
+            if restart_required:
+                self._request_runtime_backend_restart(provider)
 
     def _on_runtime_pack_download_error(self, message: str) -> None:
+        self._pending_gpu_device_enable = False
+        self._clear_pending_gpu_provider_switch()
+        self._refresh_settings_values()
         self._restart_prompt_pending = False
         self._restart_after_gpu_setup = False
         self._show_error('Runtime pack download failed', message)
 
     def _on_runtime_pack_download_stopped(self) -> None:
+        self._pending_gpu_device_enable = False
+        self._clear_pending_gpu_provider_switch()
+        self._refresh_settings_values()
         self._restart_prompt_pending = False
         self._restart_after_gpu_setup = False
         self.window.set_progress(0, 'Stopped')
@@ -1175,6 +1676,7 @@ class AppController(QObject):
         self.runtime_pack_download_in_progress = False
         self._runtime_pack_thread = None
         self._runtime_pack_worker = None
+        self._clear_pending_gpu_provider_switch()
         self._apply_controls_state()
         self._try_restart_after_gpu_setup()
         if self.close_after_runtime_pack_download:
@@ -1211,9 +1713,13 @@ class AppController(QObject):
             self._revert_to_cpu_preference(report_save_errors=False)
             self._start_runtime_probe()
             return False
+        if runtime_service.is_runtime_restart_required():
+            self._apply_state_transaction(refresh_first=False, report_save_errors=False)
+            self._request_runtime_backend_restart(self.config.gpu_provider_preference)
+            return False
         model_path = model_service.get_existing_model_path()
         if model_path is None:
-            self._show_warning('Model missing', 'Transcription model is missing. Please download it first.')
+            self._show_warning('Model missing', 'The Transcription Model package is missing. Please download it first.')
             return False
         cached = self._cached_gpu_validation_decision(model_path)
         if cached is None:
@@ -1234,28 +1740,36 @@ class AppController(QObject):
             return
         if not self._prepare_gpu_runtime_for_conversion():
             return
+        active_device = resource_service.normalize_performance_device(self.config.device_preference)
+        active_performance_mode = self._activate_performance_mode_for_device(active_device)
         self.transcription_in_progress = True
         self._apply_controls_state()
-        self.window.set_progress(0, '0%')
-        self.window.set_console_text('Starting conversion...\nRuntime: ONNX Runtime\nPlease wait, processing...')
-        modern_selected = normalize_conversion_method(self.config.conversion_method) == 'modern'
-        modern_manual_tuning = modern_selected and (not bool(self.config.modern_auto_calibration_enabled))
-        conversion_options = conversion_service.ConversionOptions(
-            conversion_method=normalize_conversion_method(self.config.conversion_method),
-            modern_adaptive_thresholds_enabled=bool(self.config.modern_adaptive_thresholds_enabled),
-            modern_input_normalization_enabled=bool(self.config.modern_input_normalization_enabled),
-            modern_smart_overlap_stitching_enabled=bool(self.config.modern_smart_overlap_stitching_enabled),
-            modern_auto_calibration_enabled=bool(self.config.modern_auto_calibration_enabled),
-            modern_threshold_bias_scale=1.0,
-            modern_cleanup_scale=float(self.config.modern_cleanup_scale if modern_manual_tuning else 1.0),
-            modern_pedal_cluster_scale=float(self.config.modern_pedal_cluster_scale if modern_manual_tuning else 1.0),
-            modern_alignment_gate_scale=float(self.config.modern_alignment_gate_scale if modern_manual_tuning else 1.0),
-            modern_manual_onset_threshold=float(self.config.modern_manual_onset_threshold),
-            modern_manual_offset_threshold=float(self.config.modern_manual_offset_threshold),
-            modern_manual_frame_threshold=float(self.config.modern_manual_frame_threshold),
-            modern_manual_pedal_offset_threshold=float(self.config.modern_manual_pedal_offset_threshold),
+        self.window.set_progress(0, 'Transcribing 0.00% | ETA --')
+        performance_name = resource_service.performance_display_name(active_performance_mode)
+        gpu_memory_text = (
+            f'GPU memory usage: {resource_service.gpu_memory_level_name(runtime_service.get_gpu_batch_size(), self.config.gpu_memory_max_batch)} '
+            f'({runtime_service.get_gpu_batch_size()} sections together)\n'
+            if active_device == 'gpu'
+            else ''
         )
-        worker = ConversionWorker(self.selected_file, conversion_options=conversion_options)
+        pedal_text = 'Included' if self.config.engine_pedals_enabled else 'Excluded'
+        dynamics_text = 'Expressive' if self.config.engine_velocity_mode == 'expressive' else f'Uniform ({self.config.engine_uniform_velocity})'
+        self.window.set_console_text(
+            'Starting conversion...\n'
+            'Engine: A2M Piano Engine\n'
+            'Runtime: ONNX Runtime\n'
+            f'CPU usage: {performance_name}\n'
+            f'{gpu_memory_text}'
+            f'Pedal events: {pedal_text}\n'
+            f'Dynamics: {dynamics_text}\n'
+            'Please wait, processing...'
+        )
+        worker = ConversionWorker(
+            self.selected_file,
+            include_pedals=self.config.engine_pedals_enabled,
+            velocity_mode=self.config.engine_velocity_mode,
+            uniform_velocity=self.config.engine_uniform_velocity,
+        )
         thread = self._create_worker_thread(worker)
         worker.progressChanged.connect(self.window.set_progress)
         worker.logChanged.connect(self.window.set_console_text)
@@ -1288,15 +1802,16 @@ class AppController(QObject):
             self.window.close()
 
     def _switch_to_cpu_mode(self) -> None:
-        conversion_service.reset_transcriptor()
         self._revert_to_cpu_preference(start_runtime_probe=True, report_save_errors=False)
 
-    def _show_gpu_fallback_message(self) -> None:
-        self._show_info('GPU unavailable', 'GPU acceleration is unfortunately not supported on this system right now.\nA2M is falling back to CPU mode automatically.')
+    def _show_gpu_fallback_message(self, reason: str='') -> None:
+        detail = str(reason or '').strip()
+        suffix = f'\n\nReason: {detail}' if detail else ''
+        self._show_info('GPU unavailable', f'GPU acceleration is unavailable right now.\nA2M is falling back to CPU mode automatically.{suffix}')
 
     def _revert_to_cpu_preference(self, *, start_runtime_probe: bool=False, report_save_errors: bool=False) -> None:
         self.config.device_preference = runtime_service.set_device_preference('cpu')
-        self.config.gpu_provider_preference = runtime_service.set_gpu_provider_preference('auto')
+        self._activate_performance_mode_for_device('cpu', reset_session=True)
         self._reset_cuda_session_validation()
         self._apply_state_transaction(refresh_first=True, report_save_errors=report_save_errors, start_runtime_probe=start_runtime_probe, apply_controls=True)
 
@@ -1313,27 +1828,23 @@ class AppController(QObject):
             return False
         return True
 
-    def _ensure_gpu_runtime_ready(self, *, prompt_if_missing: bool, revert_when_checking: bool=True) -> bool:
-        if not self._ensure_runtime_available(
-            revert_to_cpu_when_checking=revert_when_checking,
-            revert_to_cpu_when_missing=True,
-        ):
-            return False
-        if not self._ensure_runtime_pack_selected(prompt_if_missing=prompt_if_missing):
-            self._revert_to_cpu_preference(start_runtime_probe=True, report_save_errors=False)
-            return False
-        return True
-
     @staticmethod
     def _is_gpu_cpu_fallback_error(message: str) -> bool:
         normalized = str(message or '').strip().lower()
-        return 'gpu mode selected, but onnx session started on cpu' in normalized
+        fallback_markers = (
+            'gpu mode selected, but onnx session started on cpu',
+            'gpu mode selected, but no gpu provider is available',
+            'gpu mode selected, but cuda provider is not available',
+            'gpu mode selected, but directml provider is not available',
+            'gpu mode selected, but onnx gpu session could not be created',
+        )
+        return any(marker in normalized for marker in fallback_markers)
 
     def _handle_gpu_cpu_fallback_error(self, message: str) -> bool:
         if not self._is_gpu_cpu_fallback_error(message):
             return False
         self._switch_to_cpu_mode()
-        self._show_gpu_fallback_message()
+        self._show_gpu_fallback_message(message)
         return True
 
     def _should_prompt_cuda_toolkit_install(self, decision: RuntimeDecision) -> bool:
@@ -1342,7 +1853,7 @@ class AppController(QObject):
         reason_code = str(decision.reason_code or '').strip()
         if reason_code not in {REASON_PROVIDER_LOAD_FAILED, REASON_SESSION_CREATION_FAILED, REASON_PROVIDER_NOT_EXPOSED}:
             return False
-        return runtime_pack_service.resolve_provider_for_preference(self.config.gpu_provider_preference) == 'cuda'
+        return self._target_gpu_provider_for_active_runtime() == 'cuda'
 
     def _on_device_preference_changed(self, preference: str) -> None:
         if self.runtime_pack_download_in_progress:
@@ -1351,86 +1862,265 @@ class AppController(QObject):
         if pref not in {'cpu', 'gpu'}:
             pref = 'cpu'
         if pref == 'gpu':
-            self._show_gpu_setup_notice_if_needed()
-            if not self._ensure_gpu_runtime_ready(prompt_if_missing=True):
+            self._pending_gpu_device_enable = False
+            preferred_provider = self._resolved_gpu_provider()
+            alternate_provider = 'cuda' if preferred_provider == 'dml' else 'dml'
+            provider = ''
+            runtime_path = ''
+            for candidate in (preferred_provider, alternate_provider):
+                candidate_path = self._known_available_runtime_path(candidate)
+                if candidate_path:
+                    provider = candidate
+                    runtime_path = candidate_path
+                    break
+            if not runtime_path:
+                provider = self._choose_gpu_provider_for_setup()
+                if not provider:
+                    self._refresh_settings_values()
+                    return
+                status = self._provider_runtime_status(provider)
+                if status.runtime_installed and status.runtime_path:
+                    self._explain_unavailable_provider(status)
+                    self._refresh_settings_values()
+                    return
+                snapshot = self._capture_gpu_provider_state()
+                self._pending_gpu_device_enable = True
+                self._pending_gpu_provider_switch = provider
+                self._pending_gpu_provider_snapshot = snapshot
+                if not runtime_pack_service.provider_pack_url(provider):
+                    self._show_warning(
+                        'Runtime pack unavailable',
+                        f'{runtime_pack_service.provider_display_name(provider)} runtime pack URL is not configured.',
+                    )
+                    self._pending_gpu_device_enable = False
+                    self._clear_pending_gpu_provider_switch()
+                else:
+                    self._start_runtime_pack_download(provider)
+                self._refresh_settings_values()
+                return
+            current_provider = self._resolved_gpu_provider()
+            current_path = self._runtime_cache_key(runtime_service.get_effective_runtime_root_for_gpu_checks())
+            if provider != current_provider or self._runtime_cache_key(runtime_path) != current_path:
+                snapshot = self._capture_gpu_provider_state()
+                if not self._activate_gpu_provider_switch(
+                    provider,
+                    runtime_path,
+                    snapshot,
+                    enable_gpu=True,
+                ):
+                    self._refresh_settings_values()
+                    self._show_warning('GPU unavailable', 'The available GPU runtime could not be activated.')
                 return
             self.config.device_preference = runtime_service.set_device_preference('gpu')
+            self._activate_performance_mode_for_device('gpu', reset_session=True)
             self._clear_gpu_runtime_validation_state()
+            self._show_next_gpu_validation_failure = False
             self._apply_state_transaction(refresh_first=False, start_runtime_probe=True, apply_controls=True)
             return
         else:
+            self._show_next_gpu_validation_failure = False
             self.config.device_preference = runtime_service.set_device_preference(pref)
             if pref != 'gpu':
                 self._clear_gpu_runtime_validation_state()
-            conversion_service.reset_transcriptor()
+            self._activate_performance_mode_for_device('cpu', reset_session=True)
         self._apply_state_transaction(refresh_first=False, start_runtime_probe=True, apply_controls=True)
 
     def _on_gpu_provider_preference_changed(self, preference: str) -> None:
-        normalized = runtime_service.set_gpu_provider_preference(preference)
+        normalized = runtime_pack_service.resolve_provider_for_preference(preference)
         if normalized == self.config.gpu_provider_preference:
             self._refresh_settings_values()
             return
-        self.config.gpu_provider_preference = normalized
-        self._reset_cuda_session_validation()
-        if not self.transcription_in_progress:
-            conversion_service.reset_transcriptor()
-        self._apply_state_transaction(refresh_first=False)
-        if self.config.device_preference == 'gpu' and (not self.transcription_in_progress):
-            self._show_gpu_setup_notice_if_needed()
-            if not self._ensure_gpu_runtime_ready(prompt_if_missing=True, revert_when_checking=False):
-                return
-            self._clear_gpu_runtime_validation_state()
-            self._refresh_runtime_status()
-            self._apply_state_transaction(persist=False, apply_controls=True)
-            self._start_gpu_runtime_validation(show_message=True)
-
-    def _on_conversion_method_changed(self, method: str) -> None:
-        normalized = normalize_conversion_method(method)
-        if normalized == normalize_conversion_method(self.config.conversion_method):
+        if (
+            self.transcription_in_progress
+            or self.runtime_pack_download_in_progress
+            or self.cudnn_install_in_progress
+            or self._gpu_validation_in_progress
+            or self._runtime_checking
+        ):
             self._refresh_settings_values()
             return
-        self.config.conversion_method = normalized
+        snapshot = self._capture_gpu_provider_state()
+        status = self._provider_runtime_status(normalized)
+        runtime_path = self._known_available_runtime_path(normalized)
+        if not runtime_path:
+            if status.runtime_installed and status.runtime_path:
+                self._explain_unavailable_provider(status)
+                self._refresh_settings_values()
+                return
+            self._pending_gpu_provider_switch = normalized
+            self._pending_gpu_provider_snapshot = snapshot
+            if not self._prompt_runtime_pack_install(normalized):
+                self._clear_pending_gpu_provider_switch()
+            self._refresh_settings_values()
+            return
+        if not self._activate_gpu_provider_switch(normalized, runtime_path, snapshot):
+            self._refresh_settings_values()
+            self._show_warning(
+                'GPU provider unavailable',
+                f'{runtime_pack_service.provider_display_name(normalized)} could not be activated. The current provider was not changed.',
+            )
+
+    def _on_engine_pedals_enabled_changed(self, enabled: bool) -> None:
+        if self.transcription_in_progress:
+            self._refresh_settings_values()
+            return
+        self.config.engine_pedals_enabled = bool(enabled)
         self._apply_state_transaction(refresh_first=False)
 
-    def _on_modern_option_changed(self, field_name: str, enabled: bool) -> None:
-        if not hasattr(self.config, field_name):
+    def _on_engine_velocity_mode_changed(self, mode: str) -> None:
+        if self.transcription_in_progress:
+            self._refresh_settings_values()
             return
-        setattr(self.config, field_name, bool(enabled))
-        self._save_config()
+        normalized = 'uniform' if str(mode).strip().lower() == 'uniform' else 'expressive'
+        self.config.engine_velocity_mode = normalized
+        self._apply_state_transaction(refresh_first=False)
 
-    def _on_modern_threshold_changed(self, field_name: str, value: float, *, lower: float, upper: float, default: float) -> None:
-        if not hasattr(self.config, field_name):
+    def _on_engine_uniform_velocity_changed(self, value: int) -> None:
+        if self.transcription_in_progress:
+            self._refresh_settings_values()
             return
-        try:
-            parsed = float(value)
-        except Exception:
-            parsed = float(default)
-        if not (parsed == parsed):
-            parsed = float(default)
-        normalized = max(float(lower), min(float(upper), float(parsed)))
-        setattr(self.config, field_name, normalized)
-        self._save_config()
+        self.config.engine_uniform_velocity = max(
+            ENGINE_UNIFORM_VELOCITY_MIN,
+            min(ENGINE_UNIFORM_VELOCITY_MAX, int(value)),
+        )
+        self._apply_state_transaction(refresh_first=False)
 
-    @staticmethod
-    def _clamp_modern_scale(value: float | int | str | None, *, default: float=1.0) -> float:
-        try:
-            parsed = float(value)
-        except Exception:
-            parsed = float(default)
-        if not (parsed == parsed):
-            parsed = float(default)
-        return max(0.6, min(2.0, float(parsed)))
-
-    def _on_modern_scale_changed(self, field_name: str, value: float, *, default: float) -> None:
-        if not hasattr(self.config, field_name):
+    def _on_transcription_performance_mode_changed(self, device: str, mode: str) -> None:
+        if self.transcription_in_progress:
+            self._refresh_settings_values()
             return
-        setattr(self.config, field_name, self._clamp_modern_scale(value, default=default))
-        self._save_config()
+        selected_device = resource_service.normalize_performance_device(device)
+        normalized = resource_service.normalize_performance_mode(mode)
+        if not self._confirm_transcription_performance_mode(selected_device, normalized):
+            self._refresh_settings_values()
+            return
+        if normalized == self._performance_mode_for_device(selected_device):
+            self._refresh_settings_values()
+            return
+        self._set_performance_mode_for_device(selected_device, normalized)
+        if selected_device == self.config.device_preference:
+            self._activate_performance_mode_for_device(selected_device, reset_session=True)
+        self._apply_state_transaction(refresh_first=False)
 
-    def _on_gpu_batch_size_changed(self, value: int) -> None:
-        self.config.gpu_batch_size = runtime_service.set_gpu_batch_size(value)
-        conversion_service.reset_transcriptor()
-        self._save_config()
+    def _confirm_transcription_performance_mode(self, device: str, mode: str) -> bool:
+        selected_device = resource_service.normalize_performance_device(device)
+        normalized = resource_service.normalize_performance_mode(mode)
+        display_name = resource_service.performance_display_name(normalized)
+        dialog = QDialog(self.window)
+        dialog.setModal(True)
+        dialog.setWindowTitle('Choose CPU usage')
+        dialog.setMinimumWidth(420)
+        icon = self.window.windowIcon()
+        if not icon.isNull():
+            dialog.setWindowIcon(icon)
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(10)
+        title = QLabel(f'Set CPU usage to {display_name}?', dialog)
+        title.setStyleSheet('font: 700 12pt "Segoe UI";')
+        layout.addWidget(title)
+
+        simple_explanation = QLabel(resource_service.performance_description(normalized, selected_device), dialog)
+        simple_explanation.setWordWrap(True)
+        layout.addWidget(simple_explanation)
+
+        technical_explanation = QLabel(
+            resource_service.performance_resource_description(normalized, device=selected_device),
+            dialog,
+        )
+        technical_explanation.setWordWrap(True)
+        technical_explanation.setObjectName('muted')
+        layout.addWidget(technical_explanation)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        cancel_button = QPushButton('Cancel', dialog)
+        apply_button = QPushButton('Apply', dialog)
+        apply_button.setDefault(True)
+        apply_button.setAutoDefault(True)
+        buttons.addWidget(cancel_button)
+        buttons.addWidget(apply_button)
+        layout.addLayout(buttons)
+        cancel_button.clicked.connect(dialog.reject)
+        apply_button.clicked.connect(dialog.accept)
+
+        self._apply_dialog_theme(dialog)
+        technical_explanation.setStyleSheet(f'color: {self.window.theme.text_secondary};')
+        return self._exec_dialog(dialog) == QDialog.Accepted
+
+    def _on_gpu_memory_usage_changed(self, batch_size: int) -> None:
+        if self.transcription_in_progress or self.config.device_preference != 'gpu':
+            self._refresh_settings_values()
+            return
+        normalized = resource_service.normalize_gpu_batch_size(batch_size)
+        if not self._confirm_gpu_memory_usage(normalized):
+            self._refresh_settings_values()
+            return
+        self._apply_gpu_memory_level(normalized)
+
+    def _confirm_gpu_memory_usage(self, batch_size: int) -> bool:
+        normalized = resource_service.normalize_gpu_batch_size(batch_size)
+        level_name = resource_service.gpu_memory_level_name(normalized, self.config.gpu_memory_max_batch)
+        dialog = QDialog(self.window)
+        dialog.setModal(True)
+        dialog.setWindowTitle('Choose GPU memory usage')
+        dialog.setMinimumWidth(420)
+        icon = self.window.windowIcon()
+        if not icon.isNull():
+            dialog.setWindowIcon(icon)
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(10)
+        title = QLabel(f'Set GPU memory usage to {level_name}?', dialog)
+        title.setStyleSheet('font: 700 12pt "Segoe UI";')
+        layout.addWidget(title)
+        simple_explanation = QLabel(resource_service.gpu_memory_description(normalized), dialog)
+        simple_explanation.setWordWrap(True)
+        layout.addWidget(simple_explanation)
+        technical_explanation = QLabel(resource_service.gpu_memory_resource_description(normalized), dialog)
+        technical_explanation.setWordWrap(True)
+        layout.addWidget(technical_explanation)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        cancel_button = QPushButton('Cancel', dialog)
+        apply_button = QPushButton('Apply', dialog)
+        apply_button.setDefault(True)
+        apply_button.setAutoDefault(True)
+        buttons.addWidget(cancel_button)
+        buttons.addWidget(apply_button)
+        layout.addLayout(buttons)
+        cancel_button.clicked.connect(dialog.reject)
+        apply_button.clicked.connect(dialog.accept)
+        self._apply_dialog_theme(dialog)
+        technical_explanation.setStyleSheet(f'color: {self.window.theme.text_secondary};')
+        return self._exec_dialog(dialog) == QDialog.Accepted
+
+    def _on_reset_engine_settings_requested(self) -> None:
+        if self.transcription_in_progress:
+            self._show_info('Reset blocked', 'Stop transcription before resetting Piano Engine settings.')
+            return
+        answer = self._ask_question(
+            'Restore Piano Engine defaults',
+            'Restore Piano Engine output and resource settings to the recommended defaults for this computer?',
+            default_button=QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        self.config.engine_pedals_enabled = True
+        self.config.engine_velocity_mode = 'expressive'
+        self.config.engine_uniform_velocity = ENGINE_UNIFORM_VELOCITY_DEFAULT
+        self.config.cpu_performance_mode = resource_service.recommended_performance_mode()
+        self.config.gpu_performance_mode = 'balanced'
+        self.config.gpu_batch_size = resource_service.gpu_memory_presets(
+            self.config.gpu_memory_max_batch
+        )['balanced']
+        self.config.hardware_defaults_initialized = True
+        self._activate_performance_mode_for_device(reset_session=True)
+        self._apply_state_transaction(refresh_first=False)
+        self._show_info('Piano Engine reset', 'Piano Engine settings were restored to the recommended defaults.')
 
     def _on_ui_scale_percent_changed(self, value: int) -> None:
         self.config.ui_scale_percent = int(value)
@@ -1461,6 +2151,8 @@ class AppController(QObject):
             or self.runtime_pack_download_in_progress
             or self.cudnn_install_in_progress
             or self.update_check_in_progress
+            or self._runtime_checking
+            or self._gpu_validation_in_progress
         ):
             self._show_info('Reset blocked', 'Stop active operations before resetting settings.')
             return
@@ -1471,15 +2163,28 @@ class AppController(QObject):
         )
         if answer != QMessageBox.Yes:
             return
+        detected_memory_max = resource_service.normalize_gpu_memory_max_batch(
+            self.config.gpu_memory_max_batch
+        )
         defaults = default_config()
+        defaults.cpu_performance_mode = resource_service.recommended_performance_mode()
+        defaults.gpu_performance_mode = 'balanced'
+        defaults.gpu_memory_max_batch = detected_memory_max
+        defaults.gpu_batch_size = resource_service.gpu_memory_presets(detected_memory_max)['balanced']
+        defaults.hardware_defaults_initialized = True
         try:
             defaults.window_geometry = self.window.saveGeometry().toBase64().data().decode('ascii')
         except Exception:
             defaults.window_geometry = self.config.window_geometry
         self.config = defaults
+        self._pending_gpu_device_enable = False
+        self._clear_pending_gpu_provider_switch()
+        self._clear_gpu_provider_switch_rollback()
         self.config.device_preference = runtime_service.set_device_preference(self.config.device_preference)
-        self.config.gpu_batch_size = runtime_service.set_gpu_batch_size(self.config.gpu_batch_size)
         self.config.gpu_provider_preference = runtime_service.set_gpu_provider_preference(self.config.gpu_provider_preference)
+        self.config.cpu_performance_mode = resource_service.normalize_performance_mode(self.config.cpu_performance_mode)
+        self.config.gpu_performance_mode = resource_service.normalize_performance_mode(self.config.gpu_performance_mode)
+        self._activate_performance_mode_for_device()
         self.config.gpu_runtime_enabled, self.config.gpu_runtime_path = runtime_service.set_gpu_runtime(self.config.gpu_runtime_enabled, self.config.gpu_runtime_path)
         self._sync_runtime_pack_selection(prefer_existing_config=True)
         self.config.download_location = str(conversion_service.set_output_midi_dir(self.config.download_location))
@@ -1490,8 +2195,16 @@ class AppController(QObject):
         self.window.set_theme(get_theme(self.config.theme_mode), self.config.theme_mode)
         self.window.set_ui_scale_percent(self.config.ui_scale_percent)
         self._update_model_status()
-        self._apply_state_transaction(refresh_first=False, start_runtime_probe=True, apply_controls=True)
-        self._show_info('Settings reset', 'All settings were reset to defaults.')
+        restart_required = runtime_service.is_runtime_restart_required()
+        self._apply_state_transaction(
+            refresh_first=False,
+            start_runtime_probe=not restart_required,
+            apply_controls=True,
+        )
+        if restart_required:
+            self._request_runtime_backend_restart(self.config.gpu_provider_preference)
+        else:
+            self._show_info('Settings reset', 'All settings were reset to defaults.')
 
     def check_for_updates(self, *, manual: bool) -> None:
         self._trigger_update_check(bool(manual))
@@ -1519,6 +2232,13 @@ class AppController(QObject):
 
     def _trigger_update_install(self, payload: dict[str, object]) -> None:
         if self._update_install_worker is not None:
+            return
+        if self._restart_after_gpu_setup:
+            self._show_info(
+                'Restart required',
+                'A2M must restart to finish applying the GPU runtime before installing an update.',
+            )
+            self._try_restart_after_gpu_setup()
             return
         if (
             self.transcription_in_progress
@@ -1563,6 +2283,7 @@ class AppController(QObject):
         self._update_worker = None
         self.update_check_in_progress = self._update_install_worker is not None
         self._close_if_update_cancel_requested()
+        self._try_restart_after_gpu_setup()
 
     def _on_update_install_worker_finished(self) -> None:
         self._update_install_thread = None
@@ -1574,6 +2295,7 @@ class AppController(QObject):
         if self._update_worker is None:
             self._update_install_fallback_url = ''
         self._close_if_update_cancel_requested()
+        self._try_restart_after_gpu_setup()
 
     def _on_update_install_success(self, payload: object) -> None:
         self._finish_update_install(payload)
@@ -1668,6 +2390,7 @@ class AppController(QObject):
             self._show_info('Update canceled', 'Update was aborted. No installer was launched.')
             return
         if status == 'ready':
+            self._update_installer_handoff_in_progress = True
             version = str(result.get('version') or '').strip() or 'latest'
             if bool(result.get('restart_after_update', True)):
                 self.window.set_progress(100, f'Handing off to installer for v{version} (app will restart after update).')
@@ -1695,8 +2418,6 @@ class AppController(QObject):
             self._show_warning('Update install', f'Could not open update page:\n{exc}')
 
     def _cancel_update_check(self) -> bool:
-        request_timeout_seconds = max(1.0, float(UPDATE_CHECK_TIMEOUT_SECONDS) * 2.0)
-        wait_timeout_ms = int(min(30000.0, (request_timeout_seconds + 3.0) * 1000.0))
         for worker in (self._update_worker, self._update_install_worker):
             if worker is None:
                 continue
@@ -1704,15 +2425,14 @@ class AppController(QObject):
                 worker.stop()
             except Exception:
                 pass
-        all_stopped = True
+        any_running = False
         for thread in (self._update_thread, self._update_install_thread):
             if thread is None:
                 continue
             if thread.isRunning():
                 thread.quit()
-                if not thread.wait(wait_timeout_ms):
-                    all_stopped = False
-        if not all_stopped:
+                any_running = True
+        if any_running:
             self.update_check_in_progress = True
             return False
         self._update_thread = None
@@ -1803,6 +2523,3 @@ class AppController(QObject):
             self.close_after_update_operation = False
         self._persist_config()
         return True
-
-
-

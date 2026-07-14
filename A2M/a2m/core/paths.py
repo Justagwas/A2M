@@ -29,17 +29,22 @@ def icon_path() -> Path:
         return local
     return bundled
 
-def script_config_path() -> Path:
-    return app_dir() / CONFIG_FILENAME
-
-def appdata_config_path() -> Path:
-    appdata = os.environ.get('APPDATA')
-    if appdata:
-        return Path(appdata) / 'A2M' / CONFIG_FILENAME
-    return Path.home() / 'AppData' / 'Roaming' / 'A2M' / CONFIG_FILENAME
-
-def localappdata_config_path() -> Path:
+def config_path() -> Path:
     return localappdata_dir() / 'A2M' / CONFIG_FILENAME
+
+def legacy_config_paths() -> list[Path]:
+    appdata = os.environ.get('APPDATA')
+    roaming_root = Path(appdata) if appdata else Path.home() / 'AppData' / 'Roaming'
+    return dedupe_paths(
+        (
+            app_dir() / CONFIG_FILENAME,
+            roaming_root / 'A2M' / CONFIG_FILENAME,
+            # A2M v1 stored its configuration directly in the user profile.
+            # Keep this last so a newer v2 configuration wins when both exist.
+            Path.home() / '.a2m_config.json',
+        ),
+        resolve_if_exists=False,
+    )
 
 def localappdata_dir() -> Path:
     root = os.environ.get('LOCALAPPDATA')
@@ -73,11 +78,3 @@ def dedupe_paths(paths: Iterable[Path | str], *, existing_only: bool=False, reso
         seen.add(key)
         deduped.append(candidate)
     return deduped
-
-def config_write_paths() -> list[Path]:
-    return dedupe_paths((localappdata_config_path(),), resolve_if_exists=False)
-
-
-def config_read_paths() -> list[Path]:
-    return dedupe_paths((localappdata_config_path(), appdata_config_path(), script_config_path()), resolve_if_exists=False)
-

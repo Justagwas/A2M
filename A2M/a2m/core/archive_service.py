@@ -47,15 +47,20 @@ def safe_extract_zip(
             if info.is_dir():
                 destination.mkdir(parents=True, exist_ok=True)
                 continue
-            try:
-                extracted_bytes += max(0, int(info.file_size))
-            except Exception:
-                extracted_bytes += 0
-            if max_total_uncompressed_bytes is not None and extracted_bytes > int(max_total_uncompressed_bytes):
+            declared_size = max(0, int(getattr(info, 'file_size', 0) or 0))
+            if max_total_uncompressed_bytes is not None and extracted_bytes + declared_size > int(max_total_uncompressed_bytes):
                 raise RuntimeError('Archive is larger than the allowed extraction limit.')
             destination.parent.mkdir(parents=True, exist_ok=True)
             with archive.open(info, 'r') as src, open(destination, 'wb') as dst:
-                shutil.copyfileobj(src, dst)
+                while True:
+                    assert_not_stopped(stop_event, message=stop_message)
+                    chunk = src.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    extracted_bytes += len(chunk)
+                    if max_total_uncompressed_bytes is not None and extracted_bytes > int(max_total_uncompressed_bytes):
+                        raise RuntimeError('Archive is larger than the allowed extraction limit.')
+                    dst.write(chunk)
             extracted_any = True
     if not extracted_any:
         raise RuntimeError(empty_message)

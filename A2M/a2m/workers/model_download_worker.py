@@ -14,11 +14,13 @@ class ModelDownloadWorker(WorkerBase):
         self._stop_event.set()
 
     def run(self) -> None:
+        self.reset_progress_eta()
+        self.emit_progress(0.0, self.progress_text_with_eta('Downloading', 0.0))
         self.logChanged.emit('Downloading model...\nPlease wait...')
 
         def on_progress(percent: float) -> None:
             value = max(0.0, min(float(percent), 100.0))
-            self.emit_progress(value, f'Downloading {value:.2f}%')
+            self.emit_progress(value, self.progress_text_with_eta('Downloading', value))
 
         def task():
             return ensure_model_file(progress_callback=on_progress, log_callback=self.logChanged.emit, stop_event=self._stop_event)

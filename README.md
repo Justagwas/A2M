@@ -43,26 +43,27 @@
 
 A2M (Audio to MIDI) is a Windows desktop app that converts local, piano-focused audio into `.mid` files.
 
-The app uses ONNX Runtime, supports CPU by default, and can switch to optional GPU acceleration through runtime packs (CUDA or DirectML). It includes two transcription engines in settings: `Legacy v1.0.0` and `Modern v2.0.0` (Legacy default).
+The app uses the single accuracy-focused **A2M Piano Engine**. It runs through ONNX Runtime on CPU by default and can switch to optional GPU acceleration through CUDA or DirectML runtime packs.
 
 ## Basic usage
 
 1. Download and install from the [latest release](https://github.com/Justagwas/A2M/releases/latest/download/A2MSetup.exe).
-2. If prompted, allow the model download.
-3. Click **Choose audio** and select a local file.
-4. Select CPU or GPU mode in settings.
-5. Click **Convert to MIDI**.
-6. Open the output folder from the footer (**Open downloads folder**) or from your configured save path.
+2. On first launch, A2M shows a brief setup splash while it checks the computer and selects safe CPU and GPU usage defaults.
+3. If prompted, allow the model download.
+4. Click **Choose audio** and select a local file.
+5. Optionally switch to GPU mode in settings.
+6. Click **Convert to MIDI**.
+7. Open the output folder from the footer (**Open output folder**) or from your configured save path.
 
 ## Features
 
 - Local audio-to-MIDI transcription workflow.
 - ONNX Runtime inference pipeline.
 - CPU-first behavior with optional GPU runtime packs.
-- GPU provider preference options: `Auto`, `CUDA`, `DirectML`.
+- Explicit GPU provider options: `CUDA` and `DirectML` (DirectML is the default).
 - In-app runtime-pack installation for GPU dependencies.
-- Legacy and Modern transcription engines.
-- Modern tuning options for adaptive thresholds, input normalization/denoise, overlap stitching, and auto calibration.
+- One consistent A2M Piano Engine with automatic note, timing, velocity, and pedal decoding.
+- CPU usage and system-scaled GPU memory controls, plus pedal and velocity options.
 - Output location controls, UI scale controls, and update checks.
 - Stop/cancel handling for model download, runtime-pack download, cuDNN install, and conversion.
 
@@ -76,11 +77,12 @@ The app uses ONNX Runtime, supports CPU by default, and can switch to optional G
   - `%LOCALAPPDATA%\A2M\runtime_packs\dml`
 - Runtime-pack endpoints are defined in [`A2M/a2m/core/config.py`](https://github.com/Justagwas/A2M/blob/main/A2M/a2m/core/config.py).
 
-### Transcription Engines
+### Transcription Engine
 
-- `Legacy v1.0.0` is the default engine.
-- `Modern v2.0.0` exposes additional behavior controls and diagnostics.
-- Modern controls are shown contextually in settings based on selected engine/calibration mode.
+- The model is downloaded once from `https://downloads.justagwas.com/a2m/PianoModel.a2m`.
+- The downloaded package is verified and each internal model component is validated before use.
+- CPU inference is included; optional GPU runtime packs remain separate to keep the application download smaller.
+- Pedal events and model-predicted dynamics can be preserved or adjusted at MIDI export time.
 
 ## Preview
 

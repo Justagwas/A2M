@@ -23,7 +23,6 @@
   <ItemGroup>
     <Compile Include="A2M.py" />
     <Compile Include="a2m\**\*.py" />
-    <Compile Include="piano_transcription_inference\**\*.py" />
   </ItemGroup>
   <ItemGroup>
     <Content Include="requirements.txt" />

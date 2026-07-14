@@ -4,24 +4,18 @@ import os
 import sys
 from pathlib import Path
 
+from .paths import normalized_path_key
 from .runtime_artifacts import runtime_search_paths
 
 
-def _normalized_path_key(path_value: str | Path) -> str:
-    try:
-        return str(Path(path_value).resolve()).lower()
-    except Exception:
-        return str(path_value).lower()
-
-
 def _prepend_env_path_once(path_str: str, *, tracked_prefixes: set[str] | None=None, track_existing: bool=False) -> None:
-    normalized = _normalized_path_key(path_str)
+    normalized = normalized_path_key(path_str)
     if not normalized:
         return
     if tracked_prefixes is not None and normalized in tracked_prefixes:
         return
     existing = [entry for entry in os.environ.get('PATH', '').split(os.pathsep) if entry]
-    existing_normalized = {_normalized_path_key(entry) for entry in existing}
+    existing_normalized = {normalized_path_key(entry) for entry in existing}
     if normalized in existing_normalized:
         if tracked_prefixes is not None and track_existing:
             tracked_prefixes.add(normalized)

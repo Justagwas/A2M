@@ -27,10 +27,10 @@ class GpuRuntimeManager:
 
     @staticmethod
     def _normalize_provider(provider_pref: str | None) -> str:
-        normalized = str(provider_pref or 'auto').strip().lower()
+        normalized = str(provider_pref or 'dml').strip().lower()
         if normalized in {'cuda', 'dml'}:
             return normalized
-        return 'auto'
+        return 'dml'
 
     @staticmethod
     def _normalize_device(device_mode: str | None) -> str:
@@ -125,6 +125,35 @@ class GpuRuntimeManager:
     def _runtime_path() -> str:
         return str(runtime_service.get_effective_runtime_root_for_gpu_checks() or '').strip()
 
+    def _provider_decision_from_helper(
+        self,
+        code: int,
+        payload: dict[str, Any],
+        *,
+        fallback_text: str,
+    ) -> RuntimeDecision:
+        if code == EXIT_OK and bool(payload.get('ok', False)):
+            active_provider = self._provider_from_helper_payload(payload)
+            model_name = gpu_runtime_service.get_gpu_model_name(active_provider)
+            return RuntimeDecision(
+                device_mode='gpu',
+                active_provider=active_provider,
+                gpu_model_name=model_name,
+                reason_code='',
+                reason_text='',
+            )
+        reason_code = str(payload.get('reason_code') or '').strip()
+        reason_text = self._short_reason(str(payload.get('reason_text') or '').strip())
+        if not reason_code:
+            reason_code = self._reason_code_for_exit(code)
+        return RuntimeDecision(
+            device_mode='cpu',
+            active_provider='cpu',
+            gpu_model_name='',
+            reason_code=reason_code,
+            reason_text=reason_text or fallback_text,
+        )
+
     def probe_runtime_path(self, runtime_path: str | Path | None) -> dict[str, Any]:
         normalized = str(runtime_path or '').strip()
         code, payload = self._run_helper('probe', runtime_path=normalized)
@@ -143,52 +172,57 @@ class GpuRuntimeManager:
             return {'runtime_available': False, 'cuda_available': False, 'dml_available': False, 'available_providers': tuple(), 'reason_code': REASON_RUNTIME_NOT_INSTALLED, 'reason_text': 'GPU runtime is not installed.'}
         return self.probe_runtime_path(runtime_path)
 
-    def validate_runtime_provider(self, provider_pref: str) -> RuntimeDecision:
-        runtime_path = self._runtime_path()
+    def validate_runtime_provider_at(
+        self,
+        runtime_path: str | Path | None,
+        provider_pref: str,
+    ) -> RuntimeDecision:
+        runtime_path = str(runtime_path or '').strip()
+        if not runtime_path:
+            return RuntimeDecision(device_mode='cpu', active_provider='cpu', gpu_model_name='', reason_code=REASON_RUNTIME_NOT_INSTALLED, reason_text='GPU runtime is not installed.')
         provider = self._normalize_provider(provider_pref)
-        if provider == 'auto':
-            detected = gpu_runtime_service.detect_runtime_provider(runtime_path) if runtime_path else ''
-            provider = detected if detected in {'cuda', 'dml'} else gpu_runtime_service.resolve_provider_for_install('auto')
         code, payload = self._run_helper('validate-provider', runtime_path=runtime_path, provider=provider)
-        if code == EXIT_OK and bool(payload.get('ok', False)):
-            active_provider = self._provider_from_helper_payload(payload)
-            model = gpu_runtime_service.get_gpu_model_name(active_provider)
-            return RuntimeDecision(device_mode='gpu', active_provider=active_provider, gpu_model_name=model, reason_code='', reason_text='')
-        reason_code = str(payload.get('reason_code') or '').strip()
-        reason_text = self._short_reason(str(payload.get('reason_text') or '').strip())
-        if not reason_code:
-            reason_code = self._reason_code_for_exit(code)
-        return RuntimeDecision(device_mode='cpu', active_provider='cpu', gpu_model_name='', reason_code=reason_code, reason_text=reason_text)
+        return self._provider_decision_from_helper(
+            code,
+            payload,
+            fallback_text='GPU provider validation failed.',
+        )
+
+    def validate_runtime_provider(self, provider_pref: str) -> RuntimeDecision:
+        return self.validate_runtime_provider_at(self._runtime_path(), provider_pref)
+
+    def prepare_gpu_runtime_at(
+        self,
+        runtime_path: str | Path | None,
+        provider_pref: str,
+        model_path: Path | str | None,
+    ) -> RuntimeDecision:
+        runtime_path = str(runtime_path or '').strip()
+        if not runtime_path:
+            return RuntimeDecision(device_mode='cpu', active_provider='cpu', gpu_model_name='', reason_code=REASON_RUNTIME_NOT_INSTALLED, reason_text='GPU runtime is not installed.')
+        provider = self._normalize_provider(provider_pref)
+        model = Path(model_path) if model_path else None
+        if model is None:
+            return self.validate_runtime_provider_at(runtime_path, provider)
+        if not model.exists():
+            return RuntimeDecision(device_mode='cpu', active_provider='cpu', gpu_model_name='', reason_code=REASON_MODEL_MISSING_FOR_GPU_CHECK, reason_text='Model file is missing for GPU validation.')
+        code, payload = self._run_helper(
+            'create-session',
+            runtime_path=runtime_path,
+            provider=provider,
+            model_path=str(model),
+        )
+        return self._provider_decision_from_helper(
+            code,
+            payload,
+            fallback_text='GPU activation failed.',
+        )
 
     def activate_gpu_or_fallback(self, device_pref: str, provider_pref: str, model_path: Path | str | None) -> RuntimeDecision:
         if self._normalize_device(device_pref) != 'gpu':
             return RuntimeDecision(device_mode='cpu', active_provider='cpu', gpu_model_name='', reason_code='', reason_text='')
-        provider_decision = self.validate_runtime_provider(provider_pref)
-        if provider_decision.device_mode != 'gpu':
-            return provider_decision
-        model = Path(model_path) if model_path else None
-        if model is None:
-            return provider_decision
-        if not model.exists():
-            return RuntimeDecision(device_mode='cpu', active_provider='cpu', gpu_model_name='', reason_code=REASON_MODEL_MISSING_FOR_GPU_CHECK, reason_text='Model file is missing for GPU validation.')
         runtime_path = self._runtime_path()
-        code, payload = self._run_helper('create-session', runtime_path=runtime_path, provider=provider_decision.active_provider, model_path=str(model))
-        if code == EXIT_OK and bool(payload.get('ok', False)):
-            active_provider = self._provider_from_helper_payload(payload)
-            model_name = gpu_runtime_service.get_gpu_model_name(active_provider)
-            return RuntimeDecision(device_mode='gpu', active_provider=active_provider, gpu_model_name=model_name, reason_code='', reason_text='')
-        reason_code = str(payload.get('reason_code') or '').strip()
-        reason_text = self._short_reason(str(payload.get('reason_text') or '').strip())
-        if not reason_code:
-            reason_code = self._reason_code_for_exit(code)
-        return RuntimeDecision(device_mode='cpu', active_provider='cpu', gpu_model_name='', reason_code=reason_code, reason_text=reason_text or 'GPU activation failed.')
+        return self.prepare_gpu_runtime_at(runtime_path, provider_pref, model_path)
 
     def prepare_gpu_runtime(self, provider_pref: str, model_path: Path | str | None) -> RuntimeDecision:
         return self.activate_gpu_or_fallback('gpu', provider_pref, model_path)
-
-    def get_runtime_status(self) -> dict[str, Any]:
-        runtime_path = self._runtime_path()
-        provider = gpu_runtime_service.detect_runtime_provider(runtime_path) if runtime_path else ''
-        probe = self.probe_runtime_support()
-        runtime_available = bool(probe.get('runtime_available', False))
-        return {'runtime_installed': bool(runtime_path) or runtime_available, 'provider': provider, 'runtime_path': runtime_path, 'runtime_available': runtime_available, 'cuda_available': bool(probe.get('cuda_available', False)), 'dml_available': bool(probe.get('dml_available', False)), 'reason_code': str(probe.get('reason_code', '') or ''), 'reason_text': str(probe.get('reason_text', '') or '')}

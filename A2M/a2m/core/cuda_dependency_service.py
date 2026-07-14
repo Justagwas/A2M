@@ -1,8 +1,13 @@
 from __future__ import annotations
 
-import ctypes
+import importlib.metadata
+import contextlib
+import io
+import json
 import os
+import re
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from threading import Event
 from typing import Callable
@@ -10,21 +15,121 @@ from typing import Callable
 from .archive_service import assert_not_stopped as _assert_not_stopped
 from .archive_service import remove_tree as _remove_tree
 from .archive_service import safe_extract_zip as _safe_extract_zip
+from .config import CUDNN_CUDA13_DOWNLOAD_SHA256, CUDNN_CUDA13_DOWNLOAD_SIZE, CUDNN_CUDA13_DOWNLOAD_URL
 from .config import CUDNN_DOWNLOAD_MAX_BYTES, CUDNN_DOWNLOAD_SHA256, CUDNN_DOWNLOAD_SIZE, CUDNN_DOWNLOAD_URL
+from .config import ONNX_CUDA_RUNTIME_PACK_ORT_VERSION
 from .model_service import download_file
 from .paths import dedupe_paths, localappdata_dir, normalized_path_key
-
-try:
-    import winreg
-except Exception:  # pragma: no cover - non-Windows fallback
-    winreg = None  # type: ignore[assignment]
+from .runtime_artifacts import runtime_root_from_path
 
 ProgressCallback = Callable[[float], None]
-_CUDA_REQUIRED_DLLS = (
-    'cudart64_12.dll',
-    'cublasLt64_12.dll',
-    'cudnn64_9.dll',
-)
+
+
+@dataclass(frozen=True, slots=True)
+class CudaRuntimeRequirements:
+    ort_version: str
+    cuda_majors: tuple[int, ...]
+    cudnn_major: int
+
+
+def _parse_version_parts(value: str | None) -> tuple[int, int, int]:
+    raw = str(value or '').strip()
+    parts: list[int] = []
+    for token in raw.replace('-', '.').split('.'):
+        if not token.isdigit():
+            break
+        parts.append(int(token))
+        if len(parts) >= 3:
+            break
+    while len(parts) < 3:
+        parts.append(0)
+    return (parts[0], parts[1], parts[2])
+
+
+def _runtime_metadata_version(runtime_path: Path | str | None) -> str:
+    raw_path = str(runtime_path or os.environ.get('A2M_GPU_RUNTIME_PATH', '') or '').strip()
+    if not raw_path:
+        return ''
+    try:
+        root = runtime_root_from_path(Path(raw_path))
+    except Exception:
+        return ''
+    metadata_path = root / 'runtime_metadata.json'
+    if not metadata_path.exists():
+        return ''
+    try:
+        payload = json.loads(metadata_path.read_text(encoding='utf-8'))
+    except Exception:
+        return ''
+    if not isinstance(payload, dict):
+        return ''
+    provider = str(payload.get('provider', '') or '').strip().lower()
+    if provider and provider != 'cuda':
+        return ''
+    return str(payload.get('ort_version', '') or '').strip()
+
+
+def _installed_onnxruntime_gpu_version() -> str:
+    for package_name in ('onnxruntime-gpu',):
+        try:
+            return str(importlib.metadata.version(package_name))
+        except Exception:
+            continue
+    try:
+        import onnxruntime as ort
+        providers = tuple(str(provider) for provider in ort.get_available_providers())
+        if 'CUDAExecutionProvider' not in providers:
+            return ''
+        return str(getattr(ort, '__version__', '') or '')
+    except Exception:
+        return ''
+
+
+def get_cuda_runtime_requirements(runtime_path: Path | str | None=None) -> CudaRuntimeRequirements:
+    version = _runtime_metadata_version(runtime_path) or _installed_onnxruntime_gpu_version() or str(ONNX_CUDA_RUNTIME_PACK_ORT_VERSION or '').strip()
+    major, minor, patch = _parse_version_parts(version)
+    if (major, minor) >= (1, 27):
+        return CudaRuntimeRequirements(ort_version=version, cuda_majors=(13,), cudnn_major=9)
+    if (major, minor, patch) >= (1, 18, 1):
+        return CudaRuntimeRequirements(ort_version=version, cuda_majors=(12,), cudnn_major=9)
+    if (major, minor) >= (1, 17):
+        return CudaRuntimeRequirements(ort_version=version, cuda_majors=(12,), cudnn_major=8)
+    return CudaRuntimeRequirements(ort_version=version, cuda_majors=(11,), cudnn_major=8)
+
+
+def cuda_requirements_summary(runtime_path: Path | str | None=None) -> str:
+    requirements = get_cuda_runtime_requirements(runtime_path)
+    cuda_text = ' or '.join((f'CUDA {major}.x' for major in requirements.cuda_majors))
+    ort_text = f' for onnxruntime-gpu {requirements.ort_version}' if requirements.ort_version else ''
+    return f'{cuda_text} and cuDNN {requirements.cudnn_major}.x{ort_text}'
+
+
+def required_cuda_dll_groups(runtime_path: Path | str | None=None) -> tuple[tuple[str, ...], ...]:
+    requirements = get_cuda_runtime_requirements(runtime_path)
+    cuda_majors = tuple(int(major) for major in requirements.cuda_majors)
+    return (
+        tuple((f'cudart64_{major}.dll' for major in cuda_majors)),
+        tuple((f'cublasLt64_{major}.dll' for major in cuda_majors)),
+        (f'cudnn64_{requirements.cudnn_major}.dll',),
+    )
+
+
+def _cudnn_download_for_cuda_major(cuda_major: int) -> tuple[str, str, int, int]:
+    major = int(cuda_major)
+    if major >= 13:
+        return (
+            CUDNN_CUDA13_DOWNLOAD_URL,
+            CUDNN_CUDA13_DOWNLOAD_SHA256,
+            CUDNN_CUDA13_DOWNLOAD_SIZE,
+            CUDNN_DOWNLOAD_MAX_BYTES,
+        )
+    return (CUDNN_DOWNLOAD_URL, CUDNN_DOWNLOAD_SHA256, CUDNN_DOWNLOAD_SIZE, CUDNN_DOWNLOAD_MAX_BYTES)
+
+
+def selected_cudnn_download(runtime_path: Path | str | None=None) -> tuple[str, str, int, int]:
+    requirements = get_cuda_runtime_requirements(runtime_path)
+    cuda_major = max(requirements.cuda_majors) if requirements.cuda_majors else 12
+    return _cudnn_download_for_cuda_major(int(cuda_major))
 
 
 def _updates_dir() -> Path:
@@ -99,6 +204,22 @@ def ensure_cuda_runtime_bins_in_process_path() -> list[Path]:
     return added
 
 
+def preload_onnxruntime_cuda_dlls() -> bool:
+    try:
+        import onnxruntime as ort
+    except Exception:
+        return False
+    preload = getattr(ort, 'preload_dlls', None)
+    if not callable(preload):
+        return False
+    try:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            preload(cuda=True, cudnn=True, msvc=True)
+        return True
+    except Exception:
+        return False
+
+
 def _payload_root(stage_dir: Path) -> Path:
     entries = [entry for entry in stage_dir.iterdir()]
     if len(entries) == 1 and entries[0].is_dir():
@@ -114,13 +235,14 @@ def _locate_cudnn_bin(path: Path) -> Path:
     return sorted(matches, key=lambda p: len(p.parts))[0]
 
 
-def install_cudnn_runtime(*, progress_callback: ProgressCallback | None=None, stop_event: Event | None=None) -> Path:
-    url = str(CUDNN_DOWNLOAD_URL or '').strip()
+def install_cudnn_runtime(*, progress_callback: ProgressCallback | None=None, stop_event: Event | None=None, runtime_path: Path | str | None=None) -> Path:
+    url, expected_sha256, expected_size, max_bytes = selected_cudnn_download(runtime_path)
+    url = str(url or '').strip()
     if not url:
         raise RuntimeError('cuDNN download URL is not configured.')
-    expected_sha256 = str(CUDNN_DOWNLOAD_SHA256 or '').strip()
-    if len(expected_sha256) != 64:
-        raise RuntimeError('cuDNN download integrity hash is not configured.')
+    expected_sha256 = str(expected_sha256 or '').strip()
+    if re.fullmatch(r'[0-9a-fA-F]{64}', expected_sha256) is None:
+        raise RuntimeError('cuDNN download integrity hash is not configured or invalid.')
     token = uuid.uuid4().hex
     archive_path = _updates_dir() / f'cudnn-{token}.zip'
     stage_dir = _dependencies_dir() / f'.stage-cudnn-{token}'
@@ -129,7 +251,17 @@ def install_cudnn_runtime(*, progress_callback: ProgressCallback | None=None, st
     replaced_existing = False
     try:
         _assert_not_stopped(stop_event, message='cuDNN installation was stopped.')
-        download_file(url, archive_path, progress_callback=progress_callback, stop_event=stop_event, expected_sha256=expected_sha256, expected_size=CUDNN_DOWNLOAD_SIZE, max_download_bytes=CUDNN_DOWNLOAD_MAX_BYTES)
+        download_file(
+            url,
+            archive_path,
+            progress_callback=progress_callback,
+            stop_event=stop_event,
+            expected_sha256=expected_sha256,
+            expected_size=expected_size,
+            max_download_bytes=max_bytes,
+            stop_message='cuDNN installation was stopped.',
+            error_prefix='Failed to download cuDNN',
+        )
         _assert_not_stopped(stop_event, message='cuDNN installation was stopped.')
         _safe_extract_zip(
             archive_path,
@@ -140,18 +272,22 @@ def install_cudnn_runtime(*, progress_callback: ProgressCallback | None=None, st
             empty_message='cuDNN archive is empty.',
         )
         payload_root = _payload_root(stage_dir)
+        _locate_cudnn_bin(payload_root)
         if backup_root.exists():
             _remove_tree(backup_root)
         if final_root.exists():
             final_root.replace(backup_root)
             replaced_existing = True
         payload_root.replace(final_root)
+        installed_bin = _locate_cudnn_bin(final_root)
         if replaced_existing and backup_root.exists():
             _remove_tree(backup_root)
-        return _locate_cudnn_bin(final_root)
+        return installed_bin
     except Exception:
-        if replaced_existing and backup_root.exists() and (not final_root.exists()):
+        if replaced_existing and backup_root.exists():
             try:
+                if final_root.exists():
+                    _remove_tree(final_root)
                 backup_root.replace(final_root)
             except Exception:
                 pass
@@ -179,65 +315,28 @@ def add_bin_to_process_path(bin_dir: Path | str) -> bool:
     return True
 
 
-def missing_required_cuda_dlls() -> list[str]:
+def missing_required_cuda_dlls(*, runtime_path: Path | str | None=None) -> list[str]:
     env_dirs = [Path(str(entry or '').strip()) for entry in os.environ.get('PATH', '').split(os.pathsep) if str(entry or '').strip()]
     search_dirs = dedupe_paths([*env_dirs, *discover_cuda_runtime_bin_dirs()])
     missing: list[str] = []
-    for dll_name in _CUDA_REQUIRED_DLLS:
+    for dll_group in required_cuda_dll_groups(runtime_path):
         found = False
         for base in search_dirs:
-            try:
-                if (base / dll_name).exists():
-                    found = True
-                    break
-            except Exception:
-                continue
+            for dll_name in dll_group:
+                try:
+                    if (base / dll_name).exists():
+                        found = True
+                        break
+                except Exception:
+                    continue
+            if found:
+                break
         if not found:
-            missing.append(dll_name)
+            missing.append(' or '.join(dll_group))
     return missing
 
 
-def _broadcast_environment_change() -> None:
-    if os.name != 'nt':
-        return
-    hwnd_broadcast = 0xFFFF
-    wm_settingchange = 0x001A
-    smto_abortifhung = 0x0002
-    try:
-        ctypes.windll.user32.SendMessageTimeoutW(hwnd_broadcast, wm_settingchange, 0, 'Environment', smto_abortifhung, 2000, None)
-    except Exception:
-        return
-
-
-def add_bin_to_user_path(bin_dir: Path | str) -> bool:
-    if os.name != 'nt' or winreg is None:
-        return False
-    path = Path(bin_dir).resolve()
-    if not path.exists():
-        raise RuntimeError(f'cuDNN bin folder does not exist: {path}')
-    target = str(path)
-    try:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r'Environment', 0, winreg.KEY_READ | winreg.KEY_SET_VALUE) as key:
-            try:
-                existing, _value_type = winreg.QueryValueEx(key, 'Path')
-                existing_path = str(existing or '')
-            except FileNotFoundError:
-                existing_path = ''
-            entries = [entry for entry in existing_path.split(os.pathsep) if entry]
-            normalized_entries = {entry.strip().lower() for entry in entries}
-            if target.strip().lower() in normalized_entries:
-                return False
-            updated = existing_path + ((os.pathsep + target) if existing_path else target)
-            winreg.SetValueEx(key, 'Path', 0, winreg.REG_EXPAND_SZ, updated)
-    except Exception as exc:
-        raise RuntimeError(f'Failed to update user PATH: {exc}') from exc
-    _broadcast_environment_change()
-    return True
-
-
-def install_cudnn_and_configure_path(*, progress_callback: ProgressCallback | None=None, stop_event: Event | None=None) -> tuple[Path, bool, bool]:
-    bin_dir = install_cudnn_runtime(progress_callback=progress_callback, stop_event=stop_event)
+def install_cudnn_and_configure_path(*, progress_callback: ProgressCallback | None=None, stop_event: Event | None=None, runtime_path: Path | str | None=None) -> tuple[Path, bool, bool]:
+    bin_dir = install_cudnn_runtime(progress_callback=progress_callback, stop_event=stop_event, runtime_path=runtime_path)
     process_changed = add_bin_to_process_path(bin_dir)
-    user_changed = add_bin_to_user_path(bin_dir)
-    return (bin_dir, process_changed, user_changed)
-
+    return (bin_dir, process_changed, False)
