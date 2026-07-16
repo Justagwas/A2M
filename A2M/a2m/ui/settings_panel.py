@@ -164,7 +164,7 @@ class SettingsPanel(QFrame):
         self._engine_choice_layouts.append(performance_layout)
         self.performance_group = QButtonGroup(self)
         self.performance_buttons: dict[str, QPushButton] = {}
-        for text, mode in (('Low', 'low'), ('Balanced', 'balanced'), ('Fast', 'high'), ('Max', 'maximum')):
+        for text, mode in (('Low', 'low'), ('Balanced', 'balanced'), ('High', 'high'), ('Max', 'maximum')):
             button = QPushButton(text, performance_holder)
             self._configure_mode_button(button)
             button.clicked.connect(lambda checked, selected=mode: self._on_performance_clicked(checked, selected))

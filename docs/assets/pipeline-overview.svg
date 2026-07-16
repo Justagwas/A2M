@@ -1,0 +1,235 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="690" viewBox="0 0 1500 690" role="img" aria-labelledby="title desc">
+<title id="title">A2M audio-to-MIDI pipeline</title>
+<desc id="desc">A source-derived diagram of decoding, feature extraction, model scoring, interval decoding, refinement, stitching, and MIDI writing.</desc>
+<style>
+.title{font:700 28px 'Segoe UI',Arial,sans-serif;fill:#edf4ff}.subtitle{font:400 14px 'Segoe UI',Arial,sans-serif;fill:#9fb0c7}
+.h{font:700 17px 'Segoe UI',Arial,sans-serif;fill:#edf4ff}.label{font:600 13px 'Segoe UI',Arial,sans-serif;fill:#dce8f8}
+.small{font:400 12px 'Segoe UI',Arial,sans-serif;fill:#9fb0c7}.tiny{font:400 10px 'Segoe UI',Arial,sans-serif;fill:#9fb0c7}
+.mono{font:500 13px Consolas,'SFMono-Regular',monospace;fill:#dce8f8}.metric{font:700 22px 'Segoe UI',Arial,sans-serif;fill:#edf4ff}
+.flowTrack{fill:none;stroke:#182941;stroke-width:8;stroke-linecap:round;stroke-linejoin:round}
+.flow{fill:none;stroke:#b8eaf7;stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round;filter:url(#flowGlow)}
+</style>
+<defs>
+<filter id="flowGlow" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="2.2" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+<linearGradient id="longFlow" x1="1281" y1="0" x2="219" y2="0" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#a78bfa"/><stop offset="0.52" stop-color="#38bdf8"/><stop offset="1" stop-color="#2dd4bf"/></linearGradient>
+</defs>
+<rect width="1500" height="690" rx="18" fill="#08111f"/>
+<text x="54.00" y="53.00" class="title" text-anchor="start">From a waveform to editable MIDI</text>
+<text x="54.00" y="79.00" class="subtitle" text-anchor="start">The current A2M Piano Engine, shown at user and tensor level</text>
+<rect x="50.00" y="122.00" width="338.00" height="190.00" rx="14" fill="#101d31" stroke="#38bdf8"/>
+<circle cx="81.00" cy="153.00" r="17" fill="#38bdf8" opacity="0.20"/>
+<text x="81.00" y="158.00" class="label" text-anchor="middle" fill="#38bdf8">1</text>
+<text x="108.00" y="161.00" class="h" text-anchor="start">Decode</text>
+<text x="72.00" y="199.00" class="small" text-anchor="start">SoundFile · audioread fallback</text>
+<text x="72.00" y="223.00" class="mono" text-anchor="start">channels × samples</text>
+<polyline points="72.0,267.0 76.3,270.5 80.5,273.7 84.8,276.0 89.0,276.7 93.3,275.5 97.6,272.6 101.8,268.4 106.1,263.7 110.3,259.3 114.6,256.1 118.9,254.8 123.1,255.8 127.4,258.9 131.7,263.7 135.9,269.1 140.2,274.3 144.4,278.1 148.7,279.9 153.0,279.3 157.2,276.5 161.5,271.9 165.7,266.6 170.0,261.4 174.3,257.5 178.5,255.5 182.8,255.6 187.0,257.8 191.3,261.5 195.6,266.0 199.8,270.3 204.1,273.7 208.3,275.6 212.6,275.8 216.9,274.4 221.1,271.9 225.4,268.7 229.7,265.6 233.9,263.1 238.2,261.6 242.4,261.2 246.7,261.9 251.0,263.4 255.2,265.4 259.5,267.3 263.7,268.9 268.0,270.0 272.3,270.5 276.5,270.3 280.8,269.6 285.0,268.5 289.3,267.2 293.6,265.9 297.8,264.8 302.1,264.1 306.3,263.9 310.6,264.2 314.9,265.0 319.1,266.3 323.4,267.9 327.7,269.6 331.9,270.9 336.2,271.8 340.4,271.7 344.7,270.8 349.0,268.9 353.2,266.3 357.5,263.6 361.7,261.1 366.0,259.5" fill="none" stroke="#38bdf8" stroke-width="2"/>
+<path d="M391 217 H401" class="flowTrack"/>
+<path d="M391 217 H401" class="flow"/>
+<rect x="404.00" y="122.00" width="338.00" height="190.00" rx="14" fill="#101d31" stroke="#38bdf8"/>
+<circle cx="435.00" cy="153.00" r="17" fill="#38bdf8" opacity="0.20"/>
+<text x="435.00" y="158.00" class="label" text-anchor="middle" fill="#38bdf8">2</text>
+<text x="462.00" y="161.00" class="h" text-anchor="start">Resample + frame</text>
+<text x="426.00" y="195.00" class="small" text-anchor="start">44.1 kHz · 4096 sample frames</text>
+<text x="426.00" y="219.00" class="mono" text-anchor="start">frame hop 1024 samples</text>
+<text x="426.00" y="243.00" class="small" text-anchor="start">16 s sections · 8 s section hop</text>
+<path d="M426 280 C446 264 462 296 482 276 S520 263 540 283 S578 295 598 274 S640 265 666 284 S698 290 720 276" fill="none" stroke="#38bdf8" stroke-width="1.5" opacity="0.42"/>
+<rect x="478" y="258" width="96" height="38" rx="3" fill="#38bdf8" fill-opacity="0.035" stroke="#38bdf8" stroke-opacity="0.28"/>
+<rect x="502" y="258" width="96" height="38" rx="3" fill="#38bdf8" fill-opacity="0.035" stroke="#38bdf8" stroke-opacity="0.42"/>
+<rect x="526" y="258" width="96" height="38" rx="3" fill="#38bdf8" fill-opacity="0.035" stroke="#38bdf8" stroke-opacity="0.58"/>
+<rect x="550" y="258" width="96" height="38" rx="3" fill="#38bdf8" fill-opacity="0.035" stroke="#38bdf8" stroke-opacity="0.74"/>
+<path d="M745 217 H755" class="flowTrack"/>
+<path d="M745 217 H755" class="flow"/>
+<rect x="758.00" y="122.00" width="338.00" height="190.00" rx="14" fill="#101d31" stroke="#2dd4bf"/>
+<circle cx="789.00" cy="153.00" r="17" fill="#2dd4bf" opacity="0.20"/>
+<text x="789.00" y="158.00" class="label" text-anchor="middle" fill="#2dd4bf">3</text>
+<text x="816.00" y="161.00" class="h" text-anchor="start">Build features</text>
+<text x="780.00" y="199.00" class="small" text-anchor="start">6 window sizes · |RFFT|²</text>
+<text x="780.00" y="223.00" class="mono" text-anchor="start">229 mel bands</text>
+<rect x="780.0" y="248.0" width="11" height="8" fill="#136077"/>
+<rect x="793.0" y="248.0" width="11" height="8" fill="#26bcb2"/>
+<rect x="806.0" y="248.0" width="11" height="8" fill="#bdc553"/>
+<rect x="819.0" y="248.0" width="11" height="8" fill="#f9bf25"/>
+<rect x="832.0" y="248.0" width="11" height="8" fill="#8dca76"/>
+<rect x="845.0" y="248.0" width="11" height="8" fill="#1d9fa2"/>
+<rect x="858.0" y="248.0" width="11" height="8" fill="#154c64"/>
+<rect x="871.0" y="248.0" width="11" height="8" fill="#102338"/>
+<rect x="884.0" y="248.0" width="11" height="8" fill="#091322"/>
+<rect x="897.0" y="248.0" width="11" height="8" fill="#091221"/>
+<rect x="910.0" y="248.0" width="11" height="8" fill="#0e2034"/>
+<rect x="923.0" y="248.0" width="11" height="8" fill="#15435c"/>
+<rect x="936.0" y="248.0" width="11" height="8" fill="#19919a"/>
+<rect x="949.0" y="248.0" width="11" height="8" fill="#73cd8a"/>
+<rect x="962.0" y="248.0" width="11" height="8" fill="#f4c029"/>
+<rect x="975.0" y="248.0" width="11" height="8" fill="#cfc445"/>
+<rect x="988.0" y="248.0" width="11" height="8" fill="#2ac9b9"/>
+<rect x="1001.0" y="248.0" width="11" height="8" fill="#136a7f"/>
+<rect x="1014.0" y="248.0" width="11" height="8" fill="#142d46"/>
+<rect x="1027.0" y="248.0" width="11" height="8" fill="#0b1829"/>
+<rect x="780.0" y="258.0" width="11" height="8" fill="#a0c868"/>
+<rect x="793.0" y="258.0" width="11" height="8" fill="#fbbf24"/>
+<rect x="806.0" y="258.0" width="11" height="8" fill="#adc75f"/>
+<rect x="819.0" y="258.0" width="11" height="8" fill="#23b2ac"/>
+<rect x="832.0" y="258.0" width="11" height="8" fill="#145970"/>
+<rect x="845.0" y="258.0" width="11" height="8" fill="#11273e"/>
+<rect x="858.0" y="258.0" width="11" height="8" fill="#0a1525"/>
+<rect x="871.0" y="258.0" width="11" height="8" fill="#081120"/>
+<rect x="884.0" y="258.0" width="11" height="8" fill="#0d1d2f"/>
+<rect x="897.0" y="258.0" width="11" height="8" fill="#163651"/>
+<rect x="910.0" y="258.0" width="11" height="8" fill="#137d90"/>
+<rect x="923.0" y="258.0" width="11" height="8" fill="#4cd1a8"/>
+<rect x="936.0" y="258.0" width="11" height="8" fill="#e9c132"/>
+<rect x="949.0" y="258.0" width="11" height="8" fill="#e2c237"/>
+<rect x="962.0" y="258.0" width="11" height="8" fill="#3ad3b5"/>
+<rect x="975.0" y="258.0" width="11" height="8" fill="#12778b"/>
+<rect x="988.0" y="258.0" width="11" height="8" fill="#16324d"/>
+<rect x="1001.0" y="258.0" width="11" height="8" fill="#0c1b2d"/>
+<rect x="1014.0" y="258.0" width="11" height="8" fill="#08111f"/>
+<rect x="1027.0" y="258.0" width="11" height="8" fill="#0a1626"/>
+<rect x="780.0" y="268.0" width="11" height="8" fill="#c7c44b"/>
+<rect x="793.0" y="268.0" width="11" height="8" fill="#28c3b6"/>
+<rect x="806.0" y="268.0" width="11" height="8" fill="#13667c"/>
+<rect x="819.0" y="268.0" width="11" height="8" fill="#132b44"/>
+<rect x="832.0" y="268.0" width="11" height="8" fill="#0b1828"/>
+<rect x="845.0" y="268.0" width="11" height="8" fill="#08111f"/>
+<rect x="858.0" y="268.0" width="11" height="8" fill="#0c1a2b"/>
+<rect x="871.0" y="268.0" width="11" height="8" fill="#152f49"/>
+<rect x="884.0" y="268.0" width="11" height="8" fill="#136f84"/>
+<rect x="897.0" y="268.0" width="11" height="8" fill="#2cd0bd"/>
+<rect x="910.0" y="268.0" width="11" height="8" fill="#d8c33f"/>
+<rect x="923.0" y="268.0" width="11" height="8" fill="#f0c02c"/>
+<rect x="936.0" y="268.0" width="11" height="8" fill="#63ce96"/>
+<rect x="949.0" y="268.0" width="11" height="8" fill="#168996"/>
+<rect x="962.0" y="268.0" width="11" height="8" fill="#153d57"/>
+<rect x="975.0" y="268.0" width="11" height="8" fill="#0e1f32"/>
+<rect x="988.0" y="268.0" width="11" height="8" fill="#081220"/>
+<rect x="1001.0" y="268.0" width="11" height="8" fill="#091423"/>
+<rect x="1014.0" y="268.0" width="11" height="8" fill="#10253a"/>
+<rect x="1027.0" y="268.0" width="11" height="8" fill="#145169"/>
+<rect x="780.0" y="278.0" width="11" height="8" fill="#127287"/>
+<rect x="793.0" y="278.0" width="11" height="8" fill="#15304a"/>
+<rect x="806.0" y="278.0" width="11" height="8" fill="#0c1a2c"/>
+<rect x="819.0" y="278.0" width="11" height="8" fill="#08111f"/>
+<rect x="832.0" y="278.0" width="11" height="8" fill="#0b1727"/>
+<rect x="845.0" y="278.0" width="11" height="8" fill="#132a42"/>
+<rect x="858.0" y="278.0" width="11" height="8" fill="#136279"/>
+<rect x="871.0" y="278.0" width="11" height="8" fill="#27bfb4"/>
+<rect x="884.0" y="278.0" width="11" height="8" fill="#c1c550"/>
+<rect x="897.0" y="278.0" width="11" height="8" fill="#f8bf26"/>
+<rect x="910.0" y="278.0" width="11" height="8" fill="#88cb7b"/>
+<rect x="923.0" y="278.0" width="11" height="8" fill="#1c9ca0"/>
+<rect x="936.0" y="278.0" width="11" height="8" fill="#154a63"/>
+<rect x="949.0" y="278.0" width="11" height="8" fill="#0f2237"/>
+<rect x="962.0" y="278.0" width="11" height="8" fill="#091322"/>
+<rect x="975.0" y="278.0" width="11" height="8" fill="#091321"/>
+<rect x="988.0" y="278.0" width="11" height="8" fill="#0f2135"/>
+<rect x="1001.0" y="278.0" width="11" height="8" fill="#15455e"/>
+<rect x="1014.0" y="278.0" width="11" height="8" fill="#1a949c"/>
+<rect x="1027.0" y="278.0" width="11" height="8" fill="#79cc86"/>
+<path d="M1099 217 H1109" class="flowTrack"/>
+<path d="M1099 217 H1109" class="flow"/>
+<rect x="1112.00" y="122.00" width="338.00" height="190.00" rx="14" fill="#101d31" stroke="#a78bfa"/>
+<circle cx="1143.00" cy="153.00" r="17" fill="#a78bfa" opacity="0.20"/>
+<text x="1143.00" y="158.00" class="label" text-anchor="middle" fill="#a78bfa">4</text>
+<text x="1170.00" y="161.00" class="h" text-anchor="start">Score intervals</text>
+<text x="1134.00" y="199.00" class="small" text-anchor="start">scorer.onnx</text>
+<text x="1134.00" y="223.00" class="mono" text-anchor="start">interval scores · T × T × 90</text>
+<rect x="1192.0" y="241" width="16" height="7" fill="#a78bfa" opacity="0.52"/>
+<rect x="1210.0" y="241" width="16" height="7" fill="#a78bfa" opacity="0.70"/>
+<rect x="1228.0" y="241" width="16" height="7" fill="#a78bfa" opacity="0.88"/>
+<rect x="1246.0" y="241" width="16" height="7" fill="#a78bfa" opacity="0.70"/>
+<rect x="1264.0" y="241" width="16" height="7" fill="#a78bfa" opacity="0.52"/>
+<rect x="1282.0" y="241" width="16" height="7" fill="#a78bfa" opacity="0.34"/>
+<rect x="1300.0" y="241" width="16" height="7" fill="#a78bfa" opacity="0.16"/>
+<rect x="1192.0" y="250" width="16" height="7" fill="#a78bfa" opacity="0.34"/>
+<rect x="1210.0" y="250" width="16" height="7" fill="#a78bfa" opacity="0.52"/>
+<rect x="1228.0" y="250" width="16" height="7" fill="#a78bfa" opacity="0.70"/>
+<rect x="1246.0" y="250" width="16" height="7" fill="#a78bfa" opacity="0.88"/>
+<rect x="1264.0" y="250" width="16" height="7" fill="#a78bfa" opacity="0.70"/>
+<rect x="1282.0" y="250" width="16" height="7" fill="#a78bfa" opacity="0.52"/>
+<rect x="1300.0" y="250" width="16" height="7" fill="#a78bfa" opacity="0.34"/>
+<rect x="1192.0" y="259" width="16" height="7" fill="#a78bfa" opacity="0.16"/>
+<rect x="1210.0" y="259" width="16" height="7" fill="#a78bfa" opacity="0.34"/>
+<rect x="1228.0" y="259" width="16" height="7" fill="#a78bfa" opacity="0.52"/>
+<rect x="1246.0" y="259" width="16" height="7" fill="#a78bfa" opacity="0.70"/>
+<rect x="1264.0" y="259" width="16" height="7" fill="#a78bfa" opacity="0.88"/>
+<rect x="1282.0" y="259" width="16" height="7" fill="#a78bfa" opacity="0.70"/>
+<rect x="1300.0" y="259" width="16" height="7" fill="#a78bfa" opacity="0.52"/>
+<rect x="1192.0" y="268" width="16" height="7" fill="#a78bfa" opacity="0.08"/>
+<rect x="1210.0" y="268" width="16" height="7" fill="#a78bfa" opacity="0.16"/>
+<rect x="1228.0" y="268" width="16" height="7" fill="#a78bfa" opacity="0.34"/>
+<rect x="1246.0" y="268" width="16" height="7" fill="#a78bfa" opacity="0.52"/>
+<rect x="1264.0" y="268" width="16" height="7" fill="#a78bfa" opacity="0.70"/>
+<rect x="1282.0" y="268" width="16" height="7" fill="#a78bfa" opacity="0.88"/>
+<rect x="1300.0" y="268" width="16" height="7" fill="#a78bfa" opacity="0.70"/>
+<rect x="1192.0" y="277" width="16" height="7" fill="#a78bfa" opacity="0.08"/>
+<rect x="1210.0" y="277" width="16" height="7" fill="#a78bfa" opacity="0.08"/>
+<rect x="1228.0" y="277" width="16" height="7" fill="#a78bfa" opacity="0.16"/>
+<rect x="1246.0" y="277" width="16" height="7" fill="#a78bfa" opacity="0.34"/>
+<rect x="1264.0" y="277" width="16" height="7" fill="#a78bfa" opacity="0.52"/>
+<rect x="1282.0" y="277" width="16" height="7" fill="#a78bfa" opacity="0.70"/>
+<rect x="1300.0" y="277" width="16" height="7" fill="#a78bfa" opacity="0.88"/>
+<rect x="1192.0" y="286" width="16" height="7" fill="#a78bfa" opacity="0.08"/>
+<rect x="1210.0" y="286" width="16" height="7" fill="#a78bfa" opacity="0.08"/>
+<rect x="1228.0" y="286" width="16" height="7" fill="#a78bfa" opacity="0.08"/>
+<rect x="1246.0" y="286" width="16" height="7" fill="#a78bfa" opacity="0.16"/>
+<rect x="1264.0" y="286" width="16" height="7" fill="#a78bfa" opacity="0.34"/>
+<rect x="1282.0" y="286" width="16" height="7" fill="#a78bfa" opacity="0.52"/>
+<rect x="1300.0" y="286" width="16" height="7" fill="#a78bfa" opacity="0.70"/>
+<rect x="1192.0" y="295" width="16" height="7" fill="#a78bfa" opacity="0.08"/>
+<rect x="1210.0" y="295" width="16" height="7" fill="#a78bfa" opacity="0.08"/>
+<rect x="1228.0" y="295" width="16" height="7" fill="#a78bfa" opacity="0.08"/>
+<rect x="1246.0" y="295" width="16" height="7" fill="#a78bfa" opacity="0.08"/>
+<rect x="1264.0" y="295" width="16" height="7" fill="#a78bfa" opacity="0.16"/>
+<rect x="1282.0" y="295" width="16" height="7" fill="#a78bfa" opacity="0.34"/>
+<rect x="1300.0" y="295" width="16" height="7" fill="#a78bfa" opacity="0.52"/>
+<rect x="50.00" y="380.00" width="338.00" height="190.00" rx="14" fill="#101d31" stroke="#a78bfa"/>
+<circle cx="81.00" cy="411.00" r="17" fill="#a78bfa" opacity="0.20"/>
+<text x="81.00" y="416.00" class="label" text-anchor="middle" fill="#a78bfa">5</text>
+<text x="108.00" y="419.00" class="h" text-anchor="start">Decode intervals</text>
+<text x="72.00" y="457.00" class="small" text-anchor="start">Viterbi-style decoding</text>
+<text x="72.00" y="481.00" class="mono" text-anchor="start">note/pedal intervals</text>
+<rect x="86.7" y="502" width="85.3" height="8" rx="2" fill="#a78bfa" opacity="0.60"/>
+<rect x="124.9" y="514" width="41.2" height="8" rx="2" fill="#a78bfa" opacity="0.68"/>
+<rect x="195.5" y="526" width="102.9" height="8" rx="2" fill="#a78bfa" opacity="0.76"/>
+<rect x="266.0" y="538" width="55.9" height="8" rx="2" fill="#a78bfa" opacity="0.84"/>
+<path d="M391 475 H401" class="flowTrack"/>
+<path d="M391 475 H401" class="flow"/>
+<rect x="404.00" y="380.00" width="338.00" height="190.00" rx="14" fill="#101d31" stroke="#fbbf24"/>
+<circle cx="435.00" cy="411.00" r="17" fill="#fbbf24" opacity="0.20"/>
+<text x="435.00" y="416.00" class="label" text-anchor="middle" fill="#fbbf24">6</text>
+<text x="462.00" y="419.00" class="h" text-anchor="start">Refine events</text>
+<text x="426.00" y="457.00" class="small" text-anchor="start">attributes.onnx</text>
+<text x="426.00" y="481.00" class="mono" text-anchor="start">timing + velocity</text>
+<rect x="440.7" y="502" width="85.3" height="8" rx="2" fill="#fbbf24" opacity="0.60"/>
+<rect x="478.9" y="514" width="41.2" height="8" rx="2" fill="#fbbf24" opacity="0.68"/>
+<rect x="549.5" y="526" width="102.9" height="8" rx="2" fill="#fbbf24" opacity="0.76"/>
+<rect x="620.0" y="538" width="55.9" height="8" rx="2" fill="#fbbf24" opacity="0.84"/>
+<path d="M745 475 H755" class="flowTrack"/>
+<path d="M745 475 H755" class="flow"/>
+<rect x="758.00" y="380.00" width="338.00" height="190.00" rx="14" fill="#101d31" stroke="#2dd4bf"/>
+<circle cx="789.00" cy="411.00" r="17" fill="#2dd4bf" opacity="0.20"/>
+<text x="789.00" y="416.00" class="label" text-anchor="middle" fill="#2dd4bf">7</text>
+<text x="816.00" y="419.00" class="h" text-anchor="start">Stitch sections</text>
+<text x="780.00" y="457.00" class="small" text-anchor="start">resolve overlapping sections</text>
+<text x="780.00" y="481.00" class="mono" text-anchor="start">section-local → global timeline</text>
+<rect x="794.7" y="502" width="85.3" height="8" rx="2" fill="#2dd4bf" opacity="0.60"/>
+<rect x="832.9" y="514" width="41.2" height="8" rx="2" fill="#2dd4bf" opacity="0.68"/>
+<rect x="903.5" y="526" width="102.9" height="8" rx="2" fill="#2dd4bf" opacity="0.76"/>
+<rect x="974.0" y="538" width="55.9" height="8" rx="2" fill="#2dd4bf" opacity="0.84"/>
+<path d="M1099 475 H1109" class="flowTrack"/>
+<path d="M1099 475 H1109" class="flow"/>
+<rect x="1112.00" y="380.00" width="338.00" height="190.00" rx="14" fill="#101d31" stroke="#38bdf8"/>
+<circle cx="1143.00" cy="411.00" r="17" fill="#38bdf8" opacity="0.20"/>
+<text x="1143.00" y="416.00" class="label" text-anchor="middle" fill="#38bdf8">8</text>
+<text x="1170.00" y="419.00" class="h" text-anchor="start">Write MIDI</text>
+<text x="1134.00" y="457.00" class="small" text-anchor="start">pretty_midi · 960 PPQ</text>
+<text x="1134.00" y="481.00" class="mono" text-anchor="start">notes + optional pedal CCs</text>
+<rect x="1148.7" y="502" width="85.3" height="8" rx="2" fill="#38bdf8" opacity="0.60"/>
+<rect x="1186.9" y="514" width="41.2" height="8" rx="2" fill="#38bdf8" opacity="0.68"/>
+<rect x="1257.5" y="526" width="102.9" height="8" rx="2" fill="#38bdf8" opacity="0.76"/>
+<rect x="1328.0" y="538" width="55.9" height="8" rx="2" fill="#38bdf8" opacity="0.84"/>
+<path d="M1281 320 V330 Q1281 346 1265 346 H235 Q219 346 219 362 V370" class="flowTrack"/>
+<path d="M1281 320 V330 Q1281 346 1265 346 H235 Q219 346 219 362 V370" fill="none" stroke="url(#longFlow)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" filter="url(#flowGlow)"/>
+<text x="54.00" y="646.00" class="label" text-anchor="start">Same scorer, interval decoder, and attribute model on CPU, CUDA, or DirectML</text>
+<text x="1446.00" y="646.00" class="small" text-anchor="end" fill="#9fb0c7">Provider choice changes execution, not the musical task</text>
+</svg>

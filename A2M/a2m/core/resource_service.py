@@ -228,7 +228,7 @@ def performance_display_name(mode: str | None) -> str:
     return {
         'low': 'Low',
         'balanced': 'Balanced',
-        'high': 'Fast',
+        'high': 'High',
         'maximum': 'Max',
     }[normalized]
 

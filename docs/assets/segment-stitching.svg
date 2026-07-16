@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="680" viewBox="0 0 1500 680" role="img" aria-labelledby="title desc">
+<title id="title">A2M overlapping segments and event stitching</title>
+<desc id="desc">Timeline showing sixteen-second segments advanced by eight seconds and how overlapping event estimates are joined.</desc>
+<style>
+.title{font:700 28px 'Segoe UI',Arial,sans-serif;fill:#edf4ff}.subtitle{font:400 14px 'Segoe UI',Arial,sans-serif;fill:#9fb0c7}
+.h{font:700 17px 'Segoe UI',Arial,sans-serif;fill:#edf4ff}.label{font:600 13px 'Segoe UI',Arial,sans-serif;fill:#dce8f8}
+.small{font:400 12px 'Segoe UI',Arial,sans-serif;fill:#9fb0c7}.tiny{font:400 10px 'Segoe UI',Arial,sans-serif;fill:#9fb0c7}
+.mono{font:500 13px Consolas,'SFMono-Regular',monospace;fill:#dce8f8}.metric{font:700 22px 'Segoe UI',Arial,sans-serif;fill:#edf4ff}
+</style>
+<rect width="1500" height="680" rx="18" fill="#08111f"/>
+<text x="54.00" y="53.00" class="title" text-anchor="start">Why A2M listens in overlapping sections</text>
+<text x="54.00" y="79.00" class="subtitle" text-anchor="start">Sixteen seconds of context, advancing eight seconds at a time</text>
+<line x1="130" y1="150" x2="1420" y2="150" stroke="#9fb0c7" stroke-width="2"/>
+<line x1="130.0" y1="142" x2="130.0" y2="158" stroke="#9fb0c7"/>
+<text x="130.00" y="135.00" class="small" text-anchor="middle">-8 s</text>
+<line x1="259.0" y1="142" x2="259.0" y2="158" stroke="#9fb0c7"/>
+<text x="259.00" y="135.00" class="small" text-anchor="middle">-4 s</text>
+<line x1="388.0" y1="142" x2="388.0" y2="158" stroke="#9fb0c7"/>
+<text x="388.00" y="135.00" class="small" text-anchor="middle">0 s</text>
+<line x1="517.0" y1="142" x2="517.0" y2="158" stroke="#9fb0c7"/>
+<text x="517.00" y="135.00" class="small" text-anchor="middle">4 s</text>
+<line x1="646.0" y1="142" x2="646.0" y2="158" stroke="#9fb0c7"/>
+<text x="646.00" y="135.00" class="small" text-anchor="middle">8 s</text>
+<line x1="775.0" y1="142" x2="775.0" y2="158" stroke="#9fb0c7"/>
+<text x="775.00" y="135.00" class="small" text-anchor="middle">12 s</text>
+<line x1="904.0" y1="142" x2="904.0" y2="158" stroke="#9fb0c7"/>
+<text x="904.00" y="135.00" class="small" text-anchor="middle">16 s</text>
+<line x1="1033.0" y1="142" x2="1033.0" y2="158" stroke="#9fb0c7"/>
+<text x="1033.00" y="135.00" class="small" text-anchor="middle">20 s</text>
+<line x1="1162.0" y1="142" x2="1162.0" y2="158" stroke="#9fb0c7"/>
+<text x="1162.00" y="135.00" class="small" text-anchor="middle">24 s</text>
+<line x1="1291.0" y1="142" x2="1291.0" y2="158" stroke="#9fb0c7"/>
+<text x="1291.00" y="135.00" class="small" text-anchor="middle">28 s</text>
+<line x1="1420.0" y1="142" x2="1420.0" y2="158" stroke="#9fb0c7"/>
+<text x="1420.00" y="135.00" class="small" text-anchor="middle">32 s</text>
+<rect x="130.00" y="188" width="516.00" height="38" rx="8" fill="#38bdf8" opacity="0.20" stroke="#38bdf8"/>
+<text x="144.00" y="213.00" class="label" text-anchor="start" fill="#38bdf8">section 1: [&#x2212;8, 8]</text>
+<rect x="388.00" y="250" width="516.00" height="38" rx="8" fill="#2dd4bf" opacity="0.20" stroke="#2dd4bf"/>
+<text x="402.00" y="275.00" class="label" text-anchor="start" fill="#2dd4bf">section 2: [0, 16]</text>
+<rect x="646.00" y="312" width="516.00" height="38" rx="8" fill="#a78bfa" opacity="0.20" stroke="#a78bfa"/>
+<text x="660.00" y="337.00" class="label" text-anchor="start" fill="#a78bfa">section 3: [8, 24]</text>
+<rect x="904.00" y="374" width="516.00" height="38" rx="8" fill="#fbbf24" opacity="0.20" stroke="#fbbf24"/>
+<text x="918.00" y="399.00" class="label" text-anchor="start" fill="#fbbf24">section 4: [16, 32]</text>
+<rect x="388.00" y="123" width="1032.00" height="334" fill="none" stroke="#2a3b55" stroke-dasharray="6 6"/>
+<text x="904.00" y="473.00" class="small" text-anchor="middle">original recording</text>
+<text x="259.00" y="473.00" class="small" text-anchor="middle">left context padding</text>
+<rect x="70.00" y="510.00" width="1395.00" height="118.00" rx="12" fill="#101d31" stroke="#2a3b55"/>
+<text x="94.00" y="543.00" class="h" text-anchor="start">Example stitching rule for one pitch</text>
+<line x1="360" y1="592" x2="1350" y2="592" stroke="#2a3b55"/>
+<rect x="420" y="570" width="390" height="18" rx="4" fill="#2dd4bf" opacity="0.52"/>
+<rect x="750" y="570" width="340" height="18" rx="4" fill="#a78bfa" opacity="0.76"/>
+<line x1="750" y1="564" x2="750" y2="595" stroke="#fbbf24" stroke-width="3"/>
+<text x="420.00" y="558.00" class="small" text-anchor="start">earlier estimate</text>
+<text x="750.00" y="558.00" class="tiny" text-anchor="middle" fill="#fbbf24">new onset</text>
+<text x="1090.00" y="558.00" class="small" text-anchor="end">later estimate</text>
+<text x="94.00" y="616.00" class="small" text-anchor="start">A later onset replaces or truncates the overlapping estimate; a continuation without a new onset extends the existing event.</text>
+<text x="1465.00" y="657.00" class="small" text-anchor="end" fill="#fbbf24">Final events are clipped to the original recording duration</text>
+</svg>

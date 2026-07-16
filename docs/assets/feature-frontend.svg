@@ -1,0 +1,115 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="650" viewBox="0 0 1500 650" role="img" aria-labelledby="title desc">
+<title id="title">A2M feature frontend</title>
+<desc id="desc">Diagram and equations for channel-aware framing, six analysis windows, real FFT power, mel projection, channel averaging, and logarithmic normalization.</desc>
+<style>
+.title{font:700 28px 'Segoe UI',Arial,sans-serif;fill:#edf4ff}.subtitle{font:400 14px 'Segoe UI',Arial,sans-serif;fill:#9fb0c7}
+.h{font:700 17px 'Segoe UI',Arial,sans-serif;fill:#edf4ff}.label{font:600 13px 'Segoe UI',Arial,sans-serif;fill:#dce8f8}
+.small{font:400 12px 'Segoe UI',Arial,sans-serif;fill:#9fb0c7}.tiny{font:400 10px 'Segoe UI',Arial,sans-serif;fill:#9fb0c7}
+.mono{font:500 13px Consolas,'SFMono-Regular',monospace;fill:#dce8f8}.metric{font:700 22px 'Segoe UI',Arial,sans-serif;fill:#edf4ff}
+.eq{font:italic 20px 'Cambria Math','STIX Two Math','Times New Roman',serif;fill:#edf4ff}.eqSmall{font:italic 17px 'Cambria Math','STIX Two Math','Times New Roman',serif;fill:#edf4ff}
+.frac{stroke:#9fb0c7;stroke-width:1.25}
+.flowTrack{fill:none;stroke:#182941;stroke-width:8;stroke-linecap:round}
+.flow{fill:none;stroke:#b8eaf7;stroke-width:2.5;stroke-linecap:round;filter:url(#flowGlow)}
+</style>
+<defs><filter id="flowGlow" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="2.2" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>
+<rect width="1500" height="650" rx="18" fill="#08111f"/>
+<text x="54.00" y="53.00" class="title" text-anchor="start">How A2M turns sound into model features</text>
+<text x="54.00" y="79.00" class="subtitle" text-anchor="start">Each frame becomes six complementary spectral views across 229 mel bands</text>
+<g transform="translate(-20 0)">
+<rect x="70.00" y="132.00" width="220.00" height="132.00" rx="12" fill="#101d31" stroke="#38bdf8"/>
+<text x="88.00" y="168.00" class="h" text-anchor="start">Channels</text>
+<text x="88.00" y="194.00" class="mono" text-anchor="start">C × samples</text>
+<line x1="88" y1="222" x2="272" y2="222" stroke="#2a3b55"/>
+<path d="M88.0,234.8L93.4,236.5L98.8,236.5L104.2,234.8L109.6,231.8L115.1,228.6L120.5,226.5L125.9,226.4L131.3,228.4L136.7,232.0L142.1,235.8L147.5,238.4L152.9,238.8L158.4,236.5L163.8,232.3L169.2,227.8L174.6,224.6L180.0,224.1L185.4,226.6L190.8,231.3L196.2,236.5L201.6,240.2L207.1,241.1L212.5,238.4L217.9,233.2L223.3,227.3L228.7,222.9L234.1,221.8L239.5,224.5L244.9,230.2L250.4,236.8L255.8,241.8L261.2,243.4L266.6,240.6L272.0,234.5" stroke="#38bdf8" stroke-width="1.7" fill="none"/>
+</g>
+<g transform="translate(-5 0)">
+<rect x="350.00" y="132.00" width="220.00" height="132.00" rx="12" fill="#101d31" stroke="#38bdf8"/>
+<text x="368.00" y="168.00" class="h" text-anchor="start">Centered frames</text>
+<text x="368.00" y="194.00" class="mono" text-anchor="start">4096 samples · hop 1024</text>
+<path d="M368 235 C382 220 395 248 410 231 S438 219 452 236 S480 246 494 228 S522 220 552 236" stroke="#38bdf8" stroke-width="1.6" opacity="0.55" fill="none"/>
+<rect x="372" y="214" width="96" height="36" rx="3" fill="#38bdf8" fill-opacity="0.04" stroke="#38bdf8" stroke-opacity="0.35"/>
+<rect x="396" y="214" width="96" height="36" rx="3" fill="#38bdf8" fill-opacity="0.04" stroke="#38bdf8" stroke-opacity="0.50"/>
+<rect x="420" y="214" width="96" height="36" rx="3" fill="#38bdf8" fill-opacity="0.04" stroke="#38bdf8" stroke-opacity="0.68"/>
+<rect x="444" y="214" width="96" height="36" rx="3" fill="#38bdf8" fill-opacity="0.04" stroke="#38bdf8" stroke-opacity="0.86"/>
+</g>
+<g transform="translate(-50 0)">
+<rect x="690.00" y="132.00" width="220.00" height="132.00" rx="12" fill="#101d31" stroke="#2dd4bf"/>
+<text x="708.00" y="168.00" class="h" text-anchor="start">Six windows</text>
+<text x="708.00" y="194.00" class="mono" text-anchor="start">w₁ … w₆</text>
+<line x1="708" y1="246" x2="892" y2="246" stroke="#2a3b55"/>
+<path d="M710 246 Q722 218 734 246" stroke="#2dd4bf" stroke-width="1.7" fill="none"/>
+<path d="M740 246 Q752 222 764 246" stroke="#2dd4bf" stroke-width="1.7" opacity="0.90" fill="none"/>
+<path d="M770 246 Q782 216 794 246" stroke="#2dd4bf" stroke-width="1.7" opacity="0.82" fill="none"/>
+<path d="M800 246 Q812 224 824 246" stroke="#2dd4bf" stroke-width="1.7" opacity="0.74" fill="none"/>
+<path d="M830 246 Q842 219 854 246" stroke="#2dd4bf" stroke-width="1.7" opacity="0.66" fill="none"/>
+<path d="M860 246 Q872 226 884 246" stroke="#2dd4bf" stroke-width="1.7" opacity="0.58" fill="none"/>
+</g>
+<g transform="translate(-55 0)">
+<rect x="990.00" y="132.00" width="220.00" height="132.00" rx="12" fill="#101d31" stroke="#a78bfa"/>
+<text x="1008.00" y="168.00" class="h" text-anchor="start">Power spectra</text>
+<text x="1008.00" y="194.00" class="mono" text-anchor="start">|RFFT(·)|²</text>
+<line x1="1008" y1="248" x2="1192" y2="248" stroke="#2a3b55"/>
+<rect x="1012" y="226" width="7" height="22" rx="1" fill="#a78bfa" opacity="0.90"/>
+<rect x="1023" y="217" width="7" height="31" rx="1" fill="#a78bfa" opacity="0.85"/>
+<rect x="1034" y="231" width="7" height="17" rx="1" fill="#a78bfa" opacity="0.80"/>
+<rect x="1045" y="222" width="7" height="26" rx="1" fill="#a78bfa" opacity="0.76"/>
+<rect x="1056" y="236" width="7" height="12" rx="1" fill="#a78bfa" opacity="0.72"/>
+<rect x="1067" y="229" width="7" height="19" rx="1" fill="#a78bfa" opacity="0.68"/>
+<rect x="1078" y="239" width="7" height="9" rx="1" fill="#a78bfa" opacity="0.64"/>
+<rect x="1089" y="233" width="7" height="15" rx="1" fill="#a78bfa" opacity="0.60"/>
+<rect x="1100" y="241" width="7" height="7" rx="1" fill="#a78bfa" opacity="0.56"/>
+<rect x="1111" y="235" width="7" height="13" rx="1" fill="#a78bfa" opacity="0.52"/>
+<rect x="1122" y="242" width="7" height="6" rx="1" fill="#a78bfa" opacity="0.48"/>
+<rect x="1133" y="238" width="7" height="10" rx="1" fill="#a78bfa" opacity="0.44"/>
+<rect x="1144" y="243" width="7" height="5" rx="1" fill="#a78bfa" opacity="0.40"/>
+<rect x="1155" y="240" width="7" height="8" rx="1" fill="#a78bfa" opacity="0.36"/>
+<rect x="1166" y="244" width="7" height="4" rx="1" fill="#a78bfa" opacity="0.32"/>
+<rect x="1177" y="242" width="7" height="6" rx="1" fill="#a78bfa" opacity="0.28"/>
+</g>
+<g transform="translate(-15 0)">
+<rect x="1245.00" y="132.00" width="220.00" height="132.00" rx="12" fill="#101d31" stroke="#fbbf24"/>
+<text x="1263.00" y="168.00" class="h" text-anchor="start">Log-mel features</text>
+<text x="1263.00" y="194.00" class="mono" text-anchor="start">T × 229 × 6</text>
+<g transform="translate(1263 214)">
+<rect x="0" y="0" width="17" height="7" fill="#12324b"/><rect x="19" y="0" width="17" height="7" fill="#16677a"/><rect x="38" y="0" width="17" height="7" fill="#20a9a5"/><rect x="57" y="0" width="17" height="7" fill="#e1c139"/><rect x="76" y="0" width="17" height="7" fill="#55c995"/><rect x="95" y="0" width="17" height="7" fill="#176d7e"/><rect x="114" y="0" width="17" height="7" fill="#142c45"/><rect x="133" y="0" width="17" height="7" fill="#0c192a"/><rect x="152" y="0" width="17" height="7" fill="#102239"/>
+<rect x="0" y="9" width="17" height="7" fill="#0d1c2e"/><rect x="19" y="9" width="17" height="7" fill="#143a54"/><rect x="38" y="9" width="17" height="7" fill="#168391"/><rect x="57" y="9" width="17" height="7" fill="#36c8ad"/><rect x="76" y="9" width="17" height="7" fill="#f3bf29"/><rect x="95" y="9" width="17" height="7" fill="#a9c85f"/><rect x="114" y="9" width="17" height="7" fill="#248f94"/><rect x="133" y="9" width="17" height="7" fill="#153d57"/><rect x="152" y="9" width="17" height="7" fill="#0b1727"/>
+<rect x="0" y="18" width="17" height="7" fill="#08111f"/><rect x="19" y="18" width="17" height="7" fill="#0f2236"/><rect x="38" y="18" width="17" height="7" fill="#154d65"/><rect x="57" y="18" width="17" height="7" fill="#19969c"/><rect x="76" y="18" width="17" height="7" fill="#7dcc82"/><rect x="95" y="18" width="17" height="7" fill="#f8bf25"/><rect x="114" y="18" width="17" height="7" fill="#c7c448"/><rect x="133" y="18" width="17" height="7" fill="#31bdb0"/><rect x="152" y="18" width="17" height="7" fill="#15556d"/>
+<rect x="0" y="27" width="17" height="7" fill="#0a1525"/><rect x="19" y="27" width="17" height="7" fill="#132940"/><rect x="38" y="27" width="17" height="7" fill="#176b7d"/><rect x="57" y="27" width="17" height="7" fill="#47c9a1"/><rect x="76" y="27" width="17" height="7" fill="#dfc23a"/><rect x="95" y="27" width="17" height="7" fill="#2cb5aa"/><rect x="114" y="27" width="17" height="7" fill="#155069"/><rect x="133" y="27" width="17" height="7" fill="#11263d"/><rect x="152" y="27" width="17" height="7" fill="#0b1828"/>
+</g>
+</g>
+<path d="M274 198 H341" class="flowTrack"/><path d="M274 198 H341" class="flow"/>
+<path d="M569 198 H636" class="flowTrack"/><path d="M569 198 H636" class="flow"/>
+<path d="M864 198 H931" class="flowTrack"/><path d="M864 198 H931" class="flow"/>
+<path d="M1159 198 H1226" class="flowTrack"/><path d="M1159 198 H1226" class="flow"/>
+<rect x="70.00" y="319.00" width="1395.00" height="255.00" rx="14" fill="#101d31" stroke="#2a3b55"/>
+<circle cx="96" cy="356" r="16" fill="#2dd4bf" opacity="0.2"/>
+<text x="96.00" y="361.00" class="label" text-anchor="middle" fill="#2dd4bf">1</text>
+<text x="126.00" y="353.00" class="label" text-anchor="start">Normalize the complete frame tensor</text>
+<g aria-label="z sub c t n equals x sub c t n minus global mean mu over global sample standard deviation sigma plus ten to the negative eight">
+<text x="126" y="390" class="eq">z<tspan baseline-shift="sub" font-size="13">c,t,n</tspan></text>
+<text x="194" y="390" class="eq">=</text>
+<text x="266" y="374" class="eqSmall" text-anchor="middle">x<tspan baseline-shift="sub" font-size="11">c,t,n</tspan> &#x2212; &#x03BC;</text>
+<line x1="224" y1="381" x2="308" y2="381" class="frac"/>
+<text x="266" y="402" class="eqSmall" text-anchor="middle">&#x03C3; + 10<tspan baseline-shift="super" font-size="11">&#x2212;8</tspan></text>
+</g>
+<circle cx="776" cy="356" r="16" fill="#2dd4bf" opacity="0.2"/>
+<text x="776.00" y="361.00" class="label" text-anchor="middle" fill="#2dd4bf">2</text>
+<text x="806.00" y="353.00" class="label" text-anchor="start">Apply each window and an orthonormal RFFT</text>
+<text x="806" y="389" class="eq" aria-label="P sub c t k w equals the squared magnitude of the real Fourier transform over sample index n of normalized samples z sub c t n times window w sub w n">P<tspan baseline-shift="sub" font-size="13">c,t,k,w</tspan><tspan baseline-shift="baseline" font-size="20"> = |RFFT</tspan><tspan baseline-shift="sub" font-size="13">n</tspan><tspan baseline-shift="baseline" font-size="20">(z</tspan><tspan baseline-shift="sub" font-size="13">c,t,n</tspan><tspan baseline-shift="baseline" font-size="20"> &#x2299; W</tspan><tspan baseline-shift="sub" font-size="13">w,n</tspan><tspan baseline-shift="baseline" font-size="20">)</tspan><tspan baseline-shift="sub" font-size="13">k</tspan><tspan baseline-shift="baseline" font-size="20">|</tspan><tspan baseline-shift="super" font-size="13">2</tspan></text>
+<circle cx="96" cy="485" r="16" fill="#2dd4bf" opacity="0.2"/>
+<text x="96.00" y="490.00" class="label" text-anchor="middle" fill="#2dd4bf">3</text>
+<text x="126.00" y="482.00" class="label" text-anchor="start">Project frequency bins into mel bands</text>
+<text x="126" y="518" class="eq" aria-label="E sub c t m w equals the sum over k of P sub c t k w times M sub k m">E<tspan baseline-shift="sub" font-size="13">c,t,m,w</tspan><tspan baseline-shift="baseline" font-size="20"> = &#x2211;</tspan><tspan baseline-shift="sub" font-size="13">k</tspan><tspan baseline-shift="baseline" font-size="20"> P</tspan><tspan baseline-shift="sub" font-size="13">c,t,k,w</tspan><tspan baseline-shift="baseline" font-size="20"> M</tspan><tspan baseline-shift="sub" font-size="13">k,m</tspan></text>
+<circle cx="776" cy="485" r="16" fill="#2dd4bf" opacity="0.2"/>
+<text x="776.00" y="490.00" class="label" text-anchor="middle" fill="#2dd4bf">4</text>
+<text x="806.00" y="482.00" class="label" text-anchor="start">Average across channels and apply log compression</text>
+<g aria-label="F sub t m w equals log of the channel mean of E plus ten to the negative five, minus log of ten to the negative five, divided by negative log of ten to the negative five">
+<text x="806" y="525" class="eq">F<tspan baseline-shift="sub" font-size="13">t,m,w</tspan></text>
+<text x="875" y="525" class="eq">=</text>
+<text x="1145" y="508" class="eqSmall" text-anchor="middle">ln((1/C) &#x2211;<tspan baseline-shift="sub" font-size="11">c</tspan><tspan baseline-shift="baseline" font-size="17"> E</tspan><tspan baseline-shift="sub" font-size="11">c,t,m,w</tspan><tspan baseline-shift="baseline" font-size="17"> + 10</tspan><tspan baseline-shift="super" font-size="11">&#x2212;5</tspan><tspan baseline-shift="baseline" font-size="17">) &#x2212; ln(10</tspan><tspan baseline-shift="super" font-size="11">&#x2212;5</tspan><tspan baseline-shift="baseline" font-size="17">)</tspan></text>
+<line x1="914" y1="516" x2="1376" y2="516" class="frac"/>
+<text x="1145" y="540" class="eqSmall" text-anchor="middle">&#x2212;ln(10<tspan baseline-shift="super" font-size="11">&#x2212;5</tspan><tspan baseline-shift="baseline" font-size="17">)</tspan></text>
+</g>
+<text x="70.00" y="620.00" class="small" text-anchor="start">Dimensions and operations are defined by the current model bundle and piano_engine.py.</text>
+<text x="1465.00" y="620.00" class="small" text-anchor="end">The source file format and original sample rate do not affect these model-facing dimensions.</text>
+</svg>

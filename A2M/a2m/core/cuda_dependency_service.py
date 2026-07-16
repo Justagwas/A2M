@@ -6,6 +6,7 @@ import io
 import json
 import os
 import re
+import tempfile
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -132,12 +133,6 @@ def selected_cudnn_download(runtime_path: Path | str | None=None) -> tuple[str, 
     return _cudnn_download_for_cuda_major(int(cuda_major))
 
 
-def _updates_dir() -> Path:
-    path = localappdata_dir() / 'A2M' / 'updates'
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
-
 def _dependencies_dir() -> Path:
     path = localappdata_dir() / 'A2M' / 'dependencies'
     path.mkdir(parents=True, exist_ok=True)
@@ -244,10 +239,14 @@ def install_cudnn_runtime(*, progress_callback: ProgressCallback | None=None, st
     if re.fullmatch(r'[0-9a-fA-F]{64}', expected_sha256) is None:
         raise RuntimeError('cuDNN download integrity hash is not configured or invalid.')
     token = uuid.uuid4().hex
-    archive_path = _updates_dir() / f'cudnn-{token}.zip'
     stage_dir = _dependencies_dir() / f'.stage-cudnn-{token}'
     final_root = _dependencies_dir() / 'cudnn'
     backup_root = _dependencies_dir() / f'.backup-cudnn-{token}'
+    download_dir = tempfile.TemporaryDirectory(
+        prefix='a2m-cudnn-',
+        ignore_cleanup_errors=True,
+    )
+    archive_path = Path(download_dir.name) / 'cudnn.zip'
     replaced_existing = False
     try:
         _assert_not_stopped(stop_event, message='cuDNN installation was stopped.')
@@ -293,11 +292,7 @@ def install_cudnn_runtime(*, progress_callback: ProgressCallback | None=None, st
                 pass
         raise
     finally:
-        if archive_path.exists():
-            try:
-                archive_path.unlink()
-            except Exception:
-                pass
+        download_dir.cleanup()
         if stage_dir.exists():
             _remove_tree(stage_dir)
 
